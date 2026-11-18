@@ -1,0 +1,965 @@
+= WPF Cheat Sheet – POSE 5CHIF
+:lang: de
+:toc: left
+:toc-title: Inhalt
+:toclevels: 2
+:icons: font
+:source-highlighter: rouge
+:sectnums:
+:figure-caption: Abbildung
+:table-caption: Tabelle
+
+Basiert auf den Kurs-Demos (LayoutSample, FirstBinding, Style1–4) und den Themen der Aufgaben
+(Calculator, HP Calculator, TicTacToe, SoccerMatchTicker, Turtle). Test: *LF1 (WPF) am 25.11.2026*.
+
+== Projektstruktur (wie im Kurs verwendet)
+
+=== Aufbau der Solution
+
+----
+MyApp.sln
+└── MyApp/
+    ├── MyApp.csproj              ← WinExe, net10.0-windows, UseWPF
+    ├── App.xaml / App.xaml.cs    ← StartupUri + globale Ressourcen (Styles)
+    ├── Tools/
+    │   ├── NotifyPropertyChanged.cs   ← INotifyPropertyChanged + SetProperty
+    │   ├── BaseViewModel.cs           ← Basisklasse für alle ViewModels
+    │   └── DelegateCommand.cs         ← ICommand-Implementierung
+    ├── Models/
+    │   └── MyData.cs                  ← reine Daten-/Logikklassen, kein WPF
+    ├── ViewModels/
+    │   └── MainWindowViewModel.cs     ← Properties, Operationen, Commands
+    └── Views/
+        ├── MainWindow.xaml            ← UI, DataContext = ViewModel
+        └── MainWindow.xaml.cs         ← nur InitializeComponent()
+----
+
+* *Model*: reines C# für Daten und Logik (z. B. Rechner-Stack, Spielfeld, Spielereignisse). Keine WPF-Referenzen.
+* *ViewModel*: stellt der View Daten als Properties und `ObservableCollection` bereit, Aktionen als `ICommand`.
+  Erbt von `BaseViewModel`, damit Änderungen im UI ankommen.
+* *View*: nur XAML, verbunden über `{Binding}`. Code-Behind bleibt (fast) leer.
+* *Tools*: wiederverwendbare MVVM-Bausteine, die von Projekt zu Projekt kopiert werden.
+* ViewModels folgen der `#region`-Gliederung des Kurses: `Properties` → `Operations` → `Commands`.
+* Die ersten Aufgaben (Calculator) verwenden noch Code-Behind mit `Click`-Handlern. Ab MVVM verwendet man Commands.
+
+=== csproj
+
+[source,xml]
+----
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+</Project>
+----
+
+* `WinExe`: GUI-Anwendung ohne Konsolenfenster.
+* `-windows`-TFM + `UseWPF`: bindet WPF ein. Läuft und kompiliert nur unter Windows.
+
+=== App.xaml mit dem Fenster im Ordner `Views`
+
+[source,xml]
+----
+<Application x:Class="MyApp.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="/Views/MainWindow.xaml">
+    <Application.Resources>
+        <!-- Styles hier gelten für die ganze App -->
+    </Application.Resources>
+</Application>
+----
+
+* `StartupUri` muss den Ordner enthalten (`/Views/...`), sobald das Fenster nach `Views` verschoben wird.
+* Außerdem `x:Class="MyApp.Views.MainWindow"` und `namespace MyApp.Views;` in der `.xaml.cs`-Datei anpassen.
+
+=== View und ViewModel verbinden
+
+[source,xml]
+----
+<Window x:Class="MyApp.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:viewModels="clr-namespace:MyApp.ViewModels"
+        Title="MainWindow" Height="350" Width="525">
+
+    <Window.DataContext>
+        <viewModels:MainWindowViewModel />
+    </Window.DataContext>
+    ...
+</Window>
+----
+
+* `xmlns:viewModels="clr-namespace:..."` macht einen C#-Namespace in XAML verwendbar.
+* Der `DataContext` wird an alle Kind-Elemente vererbt, daher sucht `{Binding X}` die Property `X` im ViewModel.
+* Das ViewModel braucht einen öffentlichen parameterlosen Konstruktor.
+
+== MVVM-Tools
+
+=== NotifyPropertyChanged / BaseViewModel
+
+[source,csharp]
+----
+using System;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+
+namespace MyApp.Tools;
+
+public class NotifyPropertyChanged : INotifyPropertyChanged
+{
+    public event PropertyChangedEventHandler PropertyChanged;
+
+    public void OnPropertyChanged([CallerMemberName] string propertyName = null)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    protected void SetProperty<T>(ref T dest, T val, [CallerMemberName] string propertyName = null)
+        where T : IComparable<T>
+    {
+        if (dest.CompareTo(val) != 0)
+        {
+            dest = val;
+            OnPropertyChanged(propertyName);
+        }
+    }
+}
+
+public class BaseViewModel : NotifyPropertyChanged
+{
+}
+----
+
+* `[CallerMemberName]` setzt den Property-Namen automatisch ein. Im Setter also ohne Argument aufrufen.
+* `SetProperty` feuert nur, wenn sich der Wert wirklich geändert hat. Das verhindert endlose Update-Schleifen.
+* Die Kursversion verlangt `IComparable<T>` (int, string, double, bool). Für andere Typen (Objekte)
+  diese Variante verwenden:
+
+[source,csharp]
+----
+protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
+{
+    if (EqualityComparer<T>.Default.Equals(field, value)) return false;
+    field = value;
+    OnPropertyChanged(propertyName);
+    return true;
+}
+----
+
+=== DelegateCommand
+
+[source,csharp]
+----
+using System;
+using System.Windows.Input;
+
+namespace MyApp.Tools;
+
+public class DelegateCommand : ICommand
+{
+    private readonly Action _command;
+    private readonly Func<bool> _canExecute;
+
+    public event EventHandler CanExecuteChanged
+    {
+        add => CommandManager.RequerySuggested += value;
+        remove => CommandManager.RequerySuggested -= value;
+    }
+
+    public DelegateCommand(Action command, Func<bool> canExecute = null)
+    {
+        _canExecute = canExecute;
+        _command = command ?? throw new ArgumentNullException();
+    }
+
+    public void Execute(object parameter) => _command();
+
+    public bool CanExecute(object parameter) => _canExecute == null || _canExecute();
+}
+----
+
+* Verpackt eine Methode, damit ein `Button` sie über `Command="{Binding XyCommand}"` aufrufen kann.
+* Liefert `canExecute` den Wert `false`, wird der Button automatisch deaktiviert.
+* `CommandManager.RequerySuggested` prüft `CanExecute` nach Benutzereingaben neu. Ändert sich der Zustand
+  ohne Eingabe (z. B. durch einen Timer), `CommandManager.InvalidateRequerySuggested();` aufrufen.
+
+=== DelegateCommand mit Parameter (Button-Raster: Rechnertasten, TicTacToe-Felder)
+
+[source,csharp]
+----
+public class DelegateCommand<T> : ICommand
+{
+    private readonly Action<T> _command;
+    private readonly Func<T, bool> _canExecute;
+
+    public event EventHandler CanExecuteChanged
+    {
+        add => CommandManager.RequerySuggested += value;
+        remove => CommandManager.RequerySuggested -= value;
+    }
+
+    public DelegateCommand(Action<T> command, Func<T, bool> canExecute = null)
+    {
+        _command = command ?? throw new ArgumentNullException();
+        _canExecute = canExecute;
+    }
+
+    public void Execute(object parameter) => _command((T)Convert.ChangeType(parameter, typeof(T)));
+
+    public bool CanExecute(object parameter) =>
+        _canExecute == null || _canExecute((T)Convert.ChangeType(parameter, typeof(T)));
+}
+----
+
+[source,xml]
+----
+<Button Content="7" Command="{Binding DigitCommand}" CommandParameter="7" />
+----
+
+* Ein Command für viele Buttons. `CommandParameter` sagt, welcher Button gedrückt wurde.
+* XAML übergibt `CommandParameter` als String. `Convert.ChangeType` macht aus `"7"` ein `int`, wenn `T` gleich `int` ist.
+* Für komplexe Objekte (z. B. ein Feld-Objekt aus einem `ItemsControl`) `CommandParameter="{Binding}"`
+  und `DelegateCommand<Field>` verwenden. Der Cast funktioniert, weil das Objekt schon vom Typ `T` ist.
+
+== ViewModel-Vorlage
+
+[source,csharp]
+----
+using System.Collections.ObjectModel;
+using System.Windows.Input;
+using MyApp.Models;
+using MyApp.Tools;
+
+namespace MyApp.ViewModels;
+
+public class MainWindowViewModel : BaseViewModel
+{
+    #region Properties
+
+    private int _currentValue = 1;
+    public int CurrentValue
+    {
+        get => _currentValue;
+        set
+        {
+            SetProperty(ref _currentValue, value);
+            OnPropertyChanged(nameof(IsCurrentValuePrim));   // abhängige Property
+        }
+    }
+
+    public bool IsCurrentValuePrim => IsPrim(CurrentValue);   // berechnet, nur lesbar
+
+    public ObservableCollection<MyData> SomeData { get; } = new();
+
+    #endregion
+
+    #region Operations
+
+    private bool IsPrim(int value)
+    {
+        for (int i = 2; i < value; i++)
+            if (value % i == 0) return false;
+        return true;
+    }
+
+    #endregion
+
+    #region Commands
+
+    public ICommand IncrementCommand { get; }
+    public ICommand ResetCommand { get; }
+
+    public MainWindowViewModel()
+    {
+        IncrementCommand = new DelegateCommand(() => CurrentValue++);
+        ResetCommand = new DelegateCommand(() => CurrentValue = 1, () => CurrentValue != 1);
+    }
+
+    #endregion
+}
+----
+
+* Backing-Feld + Property mit `SetProperty`: das UI aktualisiert sich, wenn sich der Wert ändert.
+* Berechnete Properties haben keinen Setter. Sie werden händisch mit `OnPropertyChanged(nameof(...))` gemeldet.
+* `ObservableCollection<T>`: das UI aktualisiert sich bei `Add`/`Remove`/`Clear`. Die Collection-Instanz
+  *nie* ersetzen (nur `{ get; }`), sondern nur verändern.
+* Ändert sich eine *Property eines Elements* in der Collection, sieht man das nur, wenn die Elementklasse
+  selbst `INotifyPropertyChanged` implementiert (von `NotifyPropertyChanged` erben).
+* Commands nur einmal erzeugen (im Konstruktor oder mit `{ get; } = new ...`). Die Demo verwendet
+  `=> new DelegateCommand(...)`. Das funktioniert, erzeugt aber bei jedem Lesen ein neues Objekt.
+
+== Layout-Panels
+
+=== Grid
+
+[source,xml]
+----
+<Grid>
+    <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>   <!-- so hoch wie der Inhalt -->
+        <RowDefinition Height="*"/>      <!-- nimmt den restlichen Platz -->
+        <RowDefinition Height="2*"/>     <!-- doppelt so viel wie "*" -->
+        <RowDefinition Height="40"/>     <!-- feste Pixel -->
+    </Grid.RowDefinitions>
+    <Grid.ColumnDefinitions>
+        <ColumnDefinition/>
+        <ColumnDefinition/>
+    </Grid.ColumnDefinitions>
+
+    <TextBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" />
+    <Button  Grid.Row="1" Grid.Column="0" Grid.RowSpan="2" Content="Groß" Margin="1"/>
+</Grid>
+----
+
+* Wichtigstes Layout-Werkzeug: Zeilen/Spalten mit `Auto`, `*` (proportional) oder fester Größe.
+* `Grid.Row/Column` platzieren ein Element (0-basiert, Standard 0). `RowSpan/ColumnSpan` verbinden Zellen.
+* Elemente in derselben Zelle liegen übereinander.
+* Typische Verwendung: Tastenfeld eines Rechners, Formular-Layout.
+
+=== GridSplitter
+
+[source,xml]
+----
+<Grid>
+    <Grid.ColumnDefinitions>
+        <ColumnDefinition/>
+        <ColumnDefinition Width="5"/>
+        <ColumnDefinition/>
+    </Grid.ColumnDefinitions>
+    <ListBox Grid.Column="0"/>
+    <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"/>
+    <ContentControl Grid.Column="2"/>
+</Grid>
+----
+
+* Der Benutzer kann benachbarte Zeilen oder Spalten per Ziehen in der Größe ändern. Am saubersten in einer eigenen Spalte.
+
+=== StackPanel
+
+[source,xml]
+----
+<StackPanel>
+    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+        <Label Content="Feld 1" Width="100"/>
+        <TextBox Width="50"/>
+    </StackPanel>
+</StackPanel>
+----
+
+* Stapelt Kind-Elemente vertikal (Standard) oder `Horizontal`. Gut für Label + Eingabe-Zeilen und Button-Leisten.
+* Begrenzt die Größe der Kinder nicht, daher scrollt eine `ListBox` darin nie. Stattdessen eine Grid-Zeile mit `*` verwenden.
+
+=== DockPanel
+
+[source,xml]
+----
+<DockPanel LastChildFill="True">
+    <Menu DockPanel.Dock="Top"/>
+    <StatusBar DockPanel.Dock="Bottom"/>
+    <ListBox DockPanel.Dock="Left" Width="150"/>
+    <Grid/>  <!-- das letzte Kind füllt den Rest -->
+</DockPanel>
+----
+
+* Dockt Kind-Elemente in der Reihenfolge ihrer Deklaration an die Ränder. Das letzte Kind füllt den restlichen Platz.
+* Typischer Rahmen: Menü oben, Statusleiste unten, Inhalt in der Mitte.
+
+=== WrapPanel / UniformGrid
+
+[source,xml]
+----
+<WrapPanel Orientation="Horizontal" ItemWidth="80">
+    <Button>1</Button><Button>2</Button><Button>3</Button>
+</WrapPanel>
+
+<UniformGrid Rows="3" Columns="3">
+    <Button/><Button/><Button/>
+    <Button/><Button/><Button/>
+    <Button/><Button/><Button/>
+</UniformGrid>
+----
+
+* `WrapPanel`: bricht Kind-Elemente in die nächste Zeile oder Spalte um, wenn der Platz ausgeht.
+* `UniformGrid`: alle Zellen gleich groß, zeilenweise befüllt, kein `Grid.Row` nötig.
+  Passt gut für das TicTacToe-Spielfeld oder ein Tastenfeld.
+
+=== Canvas / ScrollViewer
+
+[source,xml]
+----
+<ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+    <Canvas Width="800" Height="600" Background="White">
+        <TextBlock Canvas.Left="10" Canvas.Top="10" Text="Vorname"/>
+        <Line X1="0" Y1="0" X2="100" Y2="100" Stroke="Black" StrokeThickness="2"/>
+        <Ellipse Canvas.Left="50" Canvas.Top="50" Width="20" Height="20" Fill="Green"/>
+    </Canvas>
+</ScrollViewer>
+----
+
+* `Canvas`: absolute Positionierung mit `Canvas.Left/Top`. Zum Zeichnen verwenden (Turtle).
+* `Line` verwendet eigene Koordinaten `X1/Y1/X2/Y2` relativ zum Canvas.
+* `Background` am Canvas setzen, sonst empfängt er keine Mausklicks.
+* `ScrollViewer` zeigt Scrollbalken, wenn der Inhalt größer als der sichtbare Bereich ist. Dem Inhalt eine feste Größe geben.
+
+=== Häufige Layout-Properties
+
+* `Margin="l,o,r,u"` (links, oben, rechts, unten): Abstand außerhalb des Elements. `Padding`: Abstand innerhalb.
+* `HorizontalAlignment` / `VerticalAlignment`: `Left|Center|Right|Stretch`.
+* `HorizontalContentAlignment`: richtet den Inhalt innerhalb eines Controls aus (z. B. rechtsbündige Anzeige).
+* `MinWidth`, `MaxWidth`, `Width="Auto"`.
+
+== Data Binding
+
+=== Binding-Syntax
+
+[source,xml]
+----
+<TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
+<TextBlock Text="{Binding Score, StringFormat='Score: {0}'}" />
+<TextBlock Text="{Binding Price, StringFormat={}{0:F2} €}" />
+<TextBlock Text="{Binding Path=Player.Name, FallbackValue='-'}" />
+<Label Content="{Binding CurrentValue}" />
+----
+
+* `{Binding Name}` = `{Binding Path=Name}`. Liest `Name` aus dem `DataContext`.
+* Verschachtelte Pfade funktionieren: `Player.Name`.
+* `StringFormat` formatiert den Wert. `{}` maskiert einen Format-String, der mit `{` beginnt.
+* `FallbackValue`: wird angezeigt, wenn das Binding fehlschlägt oder der Pfad `null` ist.
+
+=== Mode und UpdateSourceTrigger (FirstBinding-Demo)
+
+[source,xml]
+----
+<ComboBox Name="colorPickerCB">
+    <ComboBoxItem>Red</ComboBoxItem>
+    <ComboBoxItem>Green</ComboBoxItem>
+</ComboBox>
+<TextBox Background="{Binding ElementName=colorPickerCB, Path=Text, Mode=OneWay}" />
+
+<TextBox Name="edit01"
+         Text="{Binding ElementName=edit02, Path=Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+<TextBox Name="edit02" />
+----
+
+* `ElementName=x`: bindet an ein anderes benanntes Control statt an den DataContext.
+* `OneWay`: nur Quelle → Ziel. `TwoWay`: beide Richtungen (Standard bei `TextBox.Text`,
+  `CheckBox.IsChecked`, `Slider.Value`). `OneTime`: einmal lesen. `OneWayToSource`: nur Ziel → Quelle.
+* `UpdateSourceTrigger=PropertyChanged`: schreibt bei jedem Tastendruck zurück. Standard bei der TextBox
+  ist `LostFocus` (schreibt erst, wenn die TextBox den Fokus verliert).
+* Strings wie `"Red"` werden automatisch in einen `Brush` umgewandelt.
+
+=== Aus einem Item-Template an das ViewModel des Fensters binden
+
+[source,xml]
+----
+<Button Command="{Binding DataContext.SelectCommand,
+                  RelativeSource={RelativeSource AncestorType=Window}}"
+        CommandParameter="{Binding}" />
+----
+
+* Innerhalb eines `DataTemplate` ist der DataContext *das Element*, nicht das ViewModel.
+* `RelativeSource AncestorType=Window` geht zum Fenster hinauf und verwendet dessen DataContext.
+* `CommandParameter="{Binding}"` übergibt das ganze Element.
+
+=== Auswahl
+
+[source,xml]
+----
+<ListBox ItemsSource="{Binding Matches}"
+         SelectedItem="{Binding SelectedMatch}"
+         DisplayMemberPath="Title" />
+<TextBlock Text="{Binding SelectedMatch.Score}" />
+----
+
+* `SelectedItem` bindet TwoWay an eine ViewModel-Property (mit `SetProperty`).
+* `DisplayMemberPath`: zeigt schnell eine Property an, ohne ein Template zu schreiben.
+* Master/Detail: die Detail-Controls binden an `SelectedX.Property`.
+
+== Listen und Templates
+
+=== ItemsControl mit DataTemplate (Style4-Demo)
+
+[source,xml]
+----
+<ItemsControl ItemsSource="{Binding SomeData}">
+    <ItemsControl.ItemTemplate>
+        <DataTemplate>
+            <Border Background="Green" Margin="2" Padding="4">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{Binding MyName}" />
+                    <TextBlock Text="{Binding MyInt}" Margin="10,0,0,0"/>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+    </ItemsControl.ItemTemplate>
+</ItemsControl>
+----
+
+* `ItemsSource`: die Collection (meist eine `ObservableCollection`).
+* `DataTemplate`: wie ein einzelnes Element aussieht. Die Bindings darin beziehen sich auf die Properties des Elements.
+* `ItemsControl` hat weder Auswahl noch Scrolling. `ListBox` ergänzt Auswahl, `ListView` ergänzt Spalten.
+
+=== ListView mit Spalten (z. B. Spielereignisse)
+
+[source,xml]
+----
+<ListView ItemsSource="{Binding Events}">
+    <ListView.View>
+        <GridView>
+            <GridViewColumn Header="Minute"   DisplayMemberBinding="{Binding Minute}" Width="60"/>
+            <GridViewColumn Header="Team"     DisplayMemberBinding="{Binding Team}"   Width="120"/>
+            <GridViewColumn Header="Ereignis" DisplayMemberBinding="{Binding Text}"   Width="200"/>
+        </GridView>
+    </ListView.View>
+</ListView>
+----
+
+* Tabellenartige Liste mit Überschriften. Jede Spalte bindet an eine Property des Elements.
+
+=== Spielfeld aus einer Collection: ItemsPanel = UniformGrid (TicTacToe, Tastenfelder)
+
+[source,xml]
+----
+<ItemsControl ItemsSource="{Binding Fields}">
+    <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+            <UniformGrid Rows="3" Columns="3"/>
+        </ItemsPanelTemplate>
+    </ItemsControl.ItemsPanel>
+    <ItemsControl.ItemTemplate>
+        <DataTemplate>
+            <Button Content="{Binding Symbol}" FontSize="40"
+                    Command="{Binding DataContext.FieldClickCommand,
+                              RelativeSource={RelativeSource AncestorType=Window}}"
+                    CommandParameter="{Binding}"/>
+        </DataTemplate>
+    </ItemsControl.ItemTemplate>
+</ItemsControl>
+----
+
+[source,csharp]
+----
+public class Field : NotifyPropertyChanged
+{
+    public int Index { get; init; }
+
+    private string _symbol = "";
+    public string Symbol
+    {
+        get => _symbol;
+        set => SetProperty(ref _symbol, value);
+    }
+}
+
+// ViewModel
+public ObservableCollection<Field> Fields { get; } = new();
+public ICommand FieldClickCommand { get; }
+
+public MainWindowViewModel()
+{
+    for (int i = 0; i < 9; i++) Fields.Add(new Field { Index = i });
+    FieldClickCommand = new DelegateCommand<Field>(
+        f => { f.Symbol = _currentPlayer; /* Gewinner prüfen, Spieler wechseln */ },
+        f => f != null && f.Symbol == "" && !IsGameOver);
+}
+----
+
+* `ItemsPanel` legt fest, wie die Elemente angeordnet werden (Standard ist ein vertikales StackPanel).
+* Ein `Field`-Objekt pro Zelle. Sein `Symbol` aktualisiert das UI, weil `Field` Änderungen meldet.
+* `canExecute` deaktiviert belegte Felder und das ganze Spielfeld, sobald das Spiel vorbei ist.
+
+=== Zeichnen aus einer Collection: ItemsPanel = Canvas (Turtle)
+
+[source,xml]
+----
+<ItemsControl ItemsSource="{Binding Lines}">
+    <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+            <Canvas Width="600" Height="400" Background="White" ClipToBounds="True"/>
+        </ItemsPanelTemplate>
+    </ItemsControl.ItemsPanel>
+    <ItemsControl.ItemTemplate>
+        <DataTemplate>
+            <Line X1="{Binding X1}" Y1="{Binding Y1}" X2="{Binding X2}" Y2="{Binding Y2}"
+                  Stroke="{Binding Color}" StrokeThickness="2"/>
+        </DataTemplate>
+    </ItemsControl.ItemTemplate>
+</ItemsControl>
+----
+
+[source,csharp]
+----
+public class LineModel
+{
+    public double X1 { get; init; }
+    public double Y1 { get; init; }
+    public double X2 { get; init; }
+    public double Y2 { get; init; }
+    public string Color { get; init; } = "Black";
+}
+
+// ViewModel: vorwärts gehen und zeichnen
+private double _x = 300, _y = 200, _angle; // Winkel in Grad, 0 = rechts
+public ObservableCollection<LineModel> Lines { get; } = new();
+
+private void Forward(double distance)
+{
+    double rad = _angle * Math.PI / 180;
+    double nx = _x + distance * Math.Cos(rad);
+    double ny = _y - distance * Math.Sin(rad);   // Bildschirm-Y wächst nach unten
+    Lines.Add(new LineModel { X1 = _x, Y1 = _y, X2 = nx, Y2 = ny });
+    _x = nx; _y = ny;
+}
+
+private void Turn(double degrees) => _angle = (_angle + degrees) % 360;
+----
+
+* Das ViewModel hält nur Liniendaten, der Canvas zeichnet sie. In C# werden keine UI-Elemente erzeugt.
+* `Math.Cos/Sin` rechnen im Bogenmaß, daher mit `* Math.PI / 180` umrechnen.
+* Die Bildschirm-Y-Achse zeigt nach unten, daher für „oben“ subtrahieren.
+* Um andere Elemente als `Line` (z. B. die Schildkröte) in einem ItemsControl-Canvas zu positionieren,
+  die Position am Item-Container setzen:
+
+[source,xml]
+----
+<ItemsControl.ItemContainerStyle>
+    <Style TargetType="ContentPresenter">
+        <Setter Property="Canvas.Left" Value="{Binding X}"/>
+        <Setter Property="Canvas.Top"  Value="{Binding Y}"/>
+    </Style>
+</ItemsControl.ItemContainerStyle>
+----
+
+* Ein Element um einen Winkel drehen: `<Polygon.RenderTransform><RotateTransform Angle="{Binding Angle}"/></Polygon.RenderTransform>`.
+  Zusätzlich `RenderTransformOrigin="0.5,0.5"` setzen, damit um die Mitte gedreht wird.
+
+== Styles und Trigger
+
+=== Implizite vs. benannte Styles (Style1/Style2-Demos)
+
+[source,xml]
+----
+<Window.Resources>
+    <!-- implizit: gilt für ALLE Buttons in diesem Fenster -->
+    <Style TargetType="{x:Type Button}" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Foreground" Value="Red" />
+        <Setter Property="Margin" Value="2" />
+    </Style>
+
+    <!-- benannt: nur dort, wo er referenziert wird -->
+    <Style x:Key="GreenButtonStyle" TargetType="{x:Type Button}">
+        <Setter Property="Background" Value="Green" />
+    </Style>
+
+    <!-- Vererbung von einem benannten Style -->
+    <Style x:Key="BigGreenButton" TargetType="Button" BasedOn="{StaticResource GreenButtonStyle}">
+        <Setter Property="FontSize" Value="30" />
+    </Style>
+</Window.Resources>
+
+<Button Content="Roter Text" />
+<Button Content="Grün" Style="{StaticResource GreenButtonStyle}" />
+----
+
+* Impliziter Style (ohne `x:Key`): gilt automatisch für jedes Element dieses `TargetType`.
+* Benannter Style: gilt nur über `Style="{StaticResource Key}"`.
+* `BasedOn` erweitert einen anderen Style. `BasedOn="{StaticResource {x:Type Button}}"` erweitert den
+  impliziten Style einer höheren Ebene (z. B. App.xaml).
+* Ein benannter Style *ersetzt* den impliziten Style für dieses Element. Ohne `BasedOn` werden sie nicht kombiniert.
+* Gültigkeitsbereich: `Application.Resources` (ganze App) > `Window.Resources` > `Grid.Resources` (lokal).
+  Der nächstgelegene gewinnt.
+
+=== Property-Trigger
+
+[source,xml]
+----
+<Style TargetType="TextBox">
+    <Style.Triggers>
+        <Trigger Property="IsFocused" Value="True">
+            <Setter Property="Background" Value="LightYellow"/>
+        </Trigger>
+    </Style.Triggers>
+</Style>
+----
+
+* Ändert das Aussehen abhängig von einer Property *des Controls selbst* (`IsFocused`, `IsEnabled`, `IsChecked` ...).
+* `IsMouseOver` auf den `Background` eines `Button` wirkt nicht sichtbar, weil das Standard-Template ihn überschreibt.
+  Für `Foreground`/`FontWeight` oder bei anderen Elementen verwenden.
+
+=== DataTrigger (Style3/Style4-Demos)
+
+[source,xml]
+----
+<Style TargetType="Label">
+    <Setter Property="FontSize" Value="28"/>
+    <Setter Property="Foreground" Value="Black"/>
+    <Style.Triggers>
+        <DataTrigger Binding="{Binding IsCurrentValuePrim}" Value="true">
+            <Setter Property="Foreground" Value="Green"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding CurrentValue}" Value="2">
+            <Setter Property="Foreground" Value="Red"/>
+        </DataTrigger>
+    </Style.Triggers>
+</Style>
+----
+
+* Ändert das Aussehen abhängig von *ViewModel- bzw. Element-Daten*. Zum Hervorheben des Gewinners, von Toren, Primzahlen ...
+* Vergleicht nur mit einem festen Wert (kein `>`/`<`). Für Bereiche eine `bool`-Property im ViewModel ergänzen.
+* Treffen mehrere Trigger zu, gewinnt der *letzte*.
+* Innerhalb eines `DataTemplate` bezieht sich das Binding auf das Element (z. B. `{Binding MyName}`).
+* Den Standardwert mit einem `Setter` im Style setzen, *nicht* direkt am Element. Ein lokales Attribut
+  wie `Foreground="Black"` schlägt jeden Trigger.
+
+=== MultiDataTrigger
+
+[source,xml]
+----
+<Style.Triggers>
+    <MultiDataTrigger>
+        <MultiDataTrigger.Conditions>
+            <Condition Binding="{Binding IsWinner}" Value="True"/>
+            <Condition Binding="{Binding Symbol}" Value="X"/>
+        </MultiDataTrigger.Conditions>
+        <Setter Property="Background" Value="Gold"/>
+    </MultiDataTrigger>
+</Style.Triggers>
+----
+
+* Greift nur, wenn *alle* Bedingungen erfüllt sind (UND).
+
+=== Ressourcen (Farben, Werte)
+
+[source,xml]
+----
+<Application.Resources>
+    <SolidColorBrush x:Key="PrimaryBrush" Color="#FF2D7D46"/>
+    <sys:Double x:Key="DisplayFontSize" xmlns:sys="clr-namespace:System;assembly=mscorlib">32</sys:Double>
+</Application.Resources>
+
+<TextBlock Foreground="{StaticResource PrimaryBrush}" FontSize="{StaticResource DisplayFontSize}"/>
+----
+
+* Einen Wert einmal definieren und überall wiederverwenden.
+* `StaticResource` wird einmal beim Laden aufgelöst. `DynamicResource` aktualisiert sich, wenn die Ressource getauscht wird (Themes).
+
+== Value Converter
+
+[source,csharp]
+----
+using System;
+using System.Globalization;
+using System.Windows;
+using System.Windows.Data;
+
+namespace MyApp.Tools;
+
+public class BoolToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is true ? Visibility.Visible : Visibility.Collapsed;
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+----
+
+[source,xml]
+----
+<Window xmlns:tools="clr-namespace:MyApp.Tools" ...>
+    <Window.Resources>
+        <tools:BoolToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
+
+    <TextBlock Text="Spiel vorbei!" Visibility="{Binding IsGameOver, Converter={StaticResource BoolToVis}}"/>
+</Window>
+----
+
+* Wandelt einen ViewModel-Wert in einen UI-Wert um (bool → Visibility, int → Brush ...).
+* WPF enthält bereits `BooleanToVisibilityConverter`: `<BooleanToVisibilityConverter x:Key="BoolToVis"/>`.
+* Oft ist ein DataTrigger oder eine zusätzliche ViewModel-Property einfacher als ein Converter.
+
+== Häufige Controls
+
+[source,xml]
+----
+<TextBox Text="{Binding Input, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="True"
+         HorizontalContentAlignment="Right" FontSize="32"/>
+<CheckBox Content="Auto" IsChecked="{Binding IsAuto}"/>
+<RadioButton GroupName="Op" Content="+" IsChecked="{Binding IsPlus}"/>
+<ComboBox ItemsSource="{Binding Teams}" SelectedItem="{Binding SelectedTeam}"/>
+<Slider Minimum="0" Maximum="100" Value="{Binding Speed}"/>
+<ProgressBar Minimum="0" Maximum="90" Value="{Binding Minute}" Height="10"/>
+<Button Content="Start" Command="{Binding StartCommand}" IsDefault="True"/>
+----
+
+* `TextBox`: Eingabe. `IsReadOnly` macht daraus eine Anzeige (Rechner).
+* `TextBlock`: schlanker Text, Property `Text`. `Label`: Property `Content`, unterstützt Zugriffstasten (`_Name`).
+* `CheckBox`/`RadioButton`: `IsChecked` ist `bool?`, lässt sich aber problemlos an `bool` binden.
+* `IsDefault`: Enter löst den Button aus. `IsCancel`: Esc löst ihn aus.
+
+== Timer, Async und Dialoge
+
+=== DispatcherTimer (Live-Ticker, Animation)
+
+[source,csharp]
+----
+using System.Windows.Threading;
+
+private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1) };
+
+public MainWindowViewModel()
+{
+    _timer.Tick += (s, e) => OnTick();
+    StartCommand = new DelegateCommand(() => _timer.Start(), () => !_timer.IsEnabled);
+    StopCommand  = new DelegateCommand(() => _timer.Stop(),  () => _timer.IsEnabled);
+}
+
+private void OnTick()
+{
+    Minute++;
+    if (Minute >= 90) _timer.Stop();
+    CommandManager.InvalidateRequerySuggested(); // Button-Zustände aktualisieren
+}
+----
+
+* Feuert `Tick` im *UI-Thread*, daher dürfen Properties und ObservableCollections direkt geändert werden.
+* `System.Timers.Timer` / `Threading.Timer` laufen in anderen Threads und stürzen ab, wenn sie das UI berühren. Vermeiden.
+
+=== async / await
+
+[source,csharp]
+----
+RunCommand = new DelegateCommand(async () =>
+{
+    foreach (var step in _steps)
+    {
+        Execute(step);
+        await Task.Delay(200);   // UI bleibt bedienbar, die Zeichnung wird animiert
+    }
+});
+----
+
+* `await Task.Delay` pausiert, ohne das Fenster einzufrieren. `Thread.Sleep` friert es ein.
+* UI-Updates aus einem echten Hintergrund-Thread brauchen `Application.Current.Dispatcher.Invoke(() => ...)`.
+
+=== Code-Behind: Events, neue Fenster, MessageBox (LayoutSample-Demo)
+
+[source,csharp]
+----
+private void _grid_Click(object sender, RoutedEventArgs e)
+{
+    var window = new GridWindow { Owner = this };
+    window.ShowDialog();            // modal; Show() = nicht modal
+}
+
+MessageBox.Show("X gewinnt!", "Spiel vorbei", MessageBoxButton.OK, MessageBoxImage.Information);
+----
+
+[source,xml]
+----
+<Button x:Name="_grid" Content="Grid" Click="_grid_Click"/>
+----
+
+* `Click="Handler"` + Methode in `.xaml.cs`: der Stil vor MVVM (Calculator, LayoutSample).
+* `x:Name` macht ein Control im Code-Behind als Feld verfügbar.
+* `ShowDialog()` blockiert, bis das Fenster geschlossen wird, und liefert `bool?` (`DialogResult`).
+
+=== Tastenkürzel → Commands
+
+[source,xml]
+----
+<Window.InputBindings>
+    <KeyBinding Key="Enter"  Command="{Binding EnterCommand}"/>
+    <KeyBinding Key="Back"   Command="{Binding BackspaceCommand}"/>
+    <KeyBinding Key="D1"     Command="{Binding DigitCommand}" CommandParameter="1"/>
+    <KeyBinding Key="Z" Modifiers="Control" Command="{Binding UndoCommand}"/>
+</Window.InputBindings>
+----
+
+* Verknüpft Tasten mit denselben Commands, die auch die Buttons verwenden. Praktisch für Rechner.
+* Die Zifferntasten der oberen Reihe heißen `D0`–`D9`, die des Nummernblocks `NumPad0`–`NumPad9`.
+
+== Logik-Snippets für das Model
+
+=== RPN-Stack (HP-Rechner)
+
+[source,csharp]
+----
+public class RpnCalculator
+{
+    private readonly Stack<double> _stack = new();
+
+    public IEnumerable<double> Items => _stack;   // oberstes Element zuerst
+
+    public void Enter(double value) => _stack.Push(value);
+
+    public void Apply(string op)
+    {
+        if (_stack.Count < 2) throw new InvalidOperationException("Zu wenige Operanden");
+        double b = _stack.Pop();   // oberstes = zweiter Operand
+        double a = _stack.Pop();
+        _stack.Push(op switch
+        {
+            "+" => a + b,
+            "-" => a - b,
+            "*" => a * b,
+            "/" => b == 0 ? throw new DivideByZeroException() : a / b,
+            _   => throw new ArgumentException(op)
+        });
+    }
+}
+----
+
+* Umgekehrte Polnische Notation: `3 ENTER 4 +` → 7. Operanden kommen auf einen Stack, ein Operator nimmt zwei herunter und legt das Ergebnis darauf.
+* Die Pop-Reihenfolge ist bei `-` und `/` wichtig: das oberste Element ist der *rechte* Operand.
+* Den Stack im ViewModel in eine `ObservableCollection<double>` spiegeln, um ihn in einer `ListBox` anzuzeigen.
+
+=== Eingaben sicher parsen
+
+[source,csharp]
+----
+if (double.TryParse(Input, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+    _calc.Enter(value);
+else
+    Error = "Ungültige Zahl";
+----
+
+* `TryParse` wirft keine Exception. Die Kultur ist wichtig: die deutsche Standardkultur erwartet `,` als Dezimaltrennzeichen.
+
+=== TicTacToe-Gewinnprüfung
+
+[source,csharp]
+----
+private static readonly int[][] Lines =
+{
+    new[] {0,1,2}, new[] {3,4,5}, new[] {6,7,8},   // Zeilen
+    new[] {0,3,6}, new[] {1,4,7}, new[] {2,5,8},   // Spalten
+    new[] {0,4,8}, new[] {2,4,6}                   // Diagonalen
+};
+
+private string GetWinner() =>
+    Lines.Select(l => l.Select(i => Fields[i].Symbol).ToArray())
+         .Where(s => s[0] != "" && s[0] == s[1] && s[1] == s[2])
+         .Select(s => s[0])
+         .FirstOrDefault();   // null = noch kein Gewinner
+----
+
+* Alle 8 Gewinnlinien sind als Index-Tripel über die 3×3-Feldliste gespeichert.
+* Unentschieden = kein Gewinner und `Fields.All(f => f.Symbol != "")`.
+
+== Checkliste / Häufige Fehler
+
+* Binding zeigt nichts an → im *Output-Fenster* nach `System.Windows.Data Error` suchen. Meist ein Tippfehler im Pfad,
+  ein fehlender `DataContext` oder eine nicht-öffentliche Property.
+* UI aktualisiert sich nicht → der Setter ruft `SetProperty`/`OnPropertyChanged` nicht auf, die Klasse erbt nicht von
+  `BaseViewModel`, oder es wurde `List<T>` statt `ObservableCollection<T>` verwendet.
+* Abhängige/berechnete Property aktualisiert sich nicht → im Setter der Quelle `OnPropertyChanged(nameof(Berechnet))` ergänzen.
+* Button bleibt deaktiviert/aktiviert → `CanExecute` wird nicht neu ausgewertet, also `CommandManager.InvalidateRequerySuggested()` aufrufen.
+* Command in einem `ItemTemplate` feuert nicht → der DataContext ist das Element. `RelativeSource AncestorType=Window` verwenden.
+* Trigger wirkt nicht → die Property wurde lokal am Element gesetzt. Den Standardwert in einen Style-`Setter` verschieben.
+* Fenster wird beim Start nicht gefunden → `StartupUri` oder `x:Class` / Namespace passen nach dem Verschieben nach `Views/` nicht zusammen.
+* Bindings funktionieren nur mit *Properties* (`{ get; set; }`), nicht mit Feldern.
