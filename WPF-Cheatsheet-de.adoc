@@ -310,19 +310,6 @@ CommandManager.InvalidateRequerySuggested();
 * `HorizontalContentAlignment`: richtet den Inhalt innerhalb eines Controls aus.
 * `MinWidth`, `MaxWidth`, `Width="Auto"`.
 
-=== Element drehen
-
-[source,xml]
-----
-<Polygon RenderTransformOrigin="0.5,0.5" ...>
-    <Polygon.RenderTransform>
-        <RotateTransform Angle="{Binding Angle}"/>
-    </Polygon.RenderTransform>
-</Polygon>
-----
-
-* `RenderTransformOrigin="0.5,0.5"` dreht um die Mitte statt um die linke obere Ecke.
-
 == Data Binding
 
 === Grundsyntax
@@ -448,6 +435,227 @@ CommandManager.InvalidateRequerySuggested();
 ----
 
 * Tabellenartige Liste mit Überschriften. Jede Spalte bindet an eine Property.
+
+== Zeichnen
+
+=== Zeichenfläche
+
+[source,xml]
+----
+<Canvas x:Name="canvas" Width="600" Height="400" Background="White" ClipToBounds="True"/>
+----
+
+* `Canvas` ist die übliche Zeichenfläche. Der Ursprung (0,0) liegt links oben, Y wächst nach *unten*.
+* `ClipToBounds="True"` schneidet alles ab, was über den Rand hinausragt.
+* `Background` setzen, sonst reagiert die Fläche nicht auf die Maus.
+
+=== Grundformen
+
+[source,xml]
+----
+<Rectangle Canvas.Left="10"  Canvas.Top="10" Width="80" Height="50"
+           Fill="LightBlue" Stroke="Navy" StrokeThickness="2" RadiusX="5" RadiusY="5"/>
+<Ellipse   Canvas.Left="120" Canvas.Top="10" Width="60" Height="60" Fill="Orange"/>
+<Line      X1="10" Y1="100" X2="200" Y2="150" Stroke="Black" StrokeThickness="3"/>
+<Polyline  Points="10,200 60,170 110,210 160,180" Stroke="Green" StrokeThickness="2"/>
+<Polygon   Points="250,20 300,100 200,100" Fill="Gold" Stroke="Black"/>
+----
+
+* `Rectangle`/`Ellipse` werden mit `Canvas.Left/Top` platziert, Größe über `Width/Height`. `RadiusX/Y` rundet Ecken ab.
+* `Line`, `Polyline` und `Polygon` verwenden eigene Koordinaten (`X1/Y1`, `Points`) relativ zum Canvas.
+* `Polyline` ist ein offener Linienzug, `Polygon` wird automatisch geschlossen und kann gefüllt werden.
+* `Fill` = Füllung, `Stroke` = Randfarbe, `StrokeThickness` = Linienstärke.
+
+=== Linienstil
+
+[source,xml]
+----
+<Line ... Stroke="Red" StrokeThickness="4"
+      StrokeDashArray="4 2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+----
+
+* `StrokeDashArray="Strich Lücke"` zeichnet gestrichelt (in Vielfachen der Linienstärke).
+* `StrokeStartLineCap`/`StrokeEndLineCap` (`Flat|Round|Square|Triangle`) formen die Linienenden.
+* `StrokeLineJoin="Round"` rundet die Ecken bei `Polyline`/`Polygon` ab.
+
+=== Path (beliebige Formen)
+
+[source,xml]
+----
+<Path Stroke="Black" StrokeThickness="2" Fill="LightGreen"
+      Data="M 10,10 L 100,10 L 100,60 Q 50,100 10,60 Z"/>
+----
+
+* `Data` verwendet eine Kurzsprache: `M` = Startpunkt, `L` = Linie, `H`/`V` = horizontale/vertikale Linie,
+  `Q` = quadratische Kurve, `C` = Bézierkurve, `A` = Bogen, `Z` = Form schließen.
+* Für Icons und komplexe Umrisse geeignet.
+
+=== Farben und Pinsel
+
+[source,xml]
+----
+<Rectangle Width="200" Height="80">
+    <Rectangle.Fill>
+        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+            <GradientStop Color="Red"  Offset="0"/>
+            <GradientStop Color="Blue" Offset="1"/>
+        </LinearGradientBrush>
+    </Rectangle.Fill>
+</Rectangle>
+----
+
+[source,csharp]
+----
+shape.Fill = Brushes.Red;
+shape.Fill = new SolidColorBrush(Color.FromRgb(255, 128, 0));
+shape.Fill = (Brush)new BrushConverter().ConvertFromString("#FF8000");
+----
+
+* `Fill` und `Stroke` erwarten einen `Brush`. In XAML genügt ein Name (`"Red"`) oder Hex-Wert (`"#FF8000"`).
+* `LinearGradientBrush` / `RadialGradientBrush` für Verläufe, `ImageBrush` für Bilder als Füllung.
+* `Opacity="0.5"` macht ein Element halbtransparent.
+
+=== Aus dem Code zeichnen
+
+[source,csharp]
+----
+var line = new Line
+{
+    X1 = 0, Y1 = 0, X2 = 100, Y2 = 50,
+    Stroke = Brushes.Black, StrokeThickness = 2
+};
+canvas.Children.Add(line);
+
+var dot = new Ellipse { Width = 10, Height = 10, Fill = Brushes.Red };
+Canvas.SetLeft(dot, 45);
+Canvas.SetTop(dot, 20);
+canvas.Children.Add(dot);
+
+canvas.Children.Clear();
+----
+
+* Formen liegen in `System.Windows.Shapes` und werden über `canvas.Children` hinzugefügt oder entfernt.
+* `Canvas.SetLeft/SetTop` ist die Code-Variante von `Canvas.Left/Top`.
+* Damit ein Kreis um einen Punkt zentriert ist: `SetLeft(x - Width / 2)` und `SetTop(y - Height / 2)`.
+* Für Code-Behind geeignet. Mit MVVM lieber den nächsten Snippet verwenden.
+
+=== Zeichnen mit MVVM
+
+[source,xml]
+----
+<ItemsControl ItemsSource="{Binding Lines}">
+    <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+            <Canvas Background="White" ClipToBounds="True"/>
+        </ItemsPanelTemplate>
+    </ItemsControl.ItemsPanel>
+    <ItemsControl.ItemTemplate>
+        <DataTemplate>
+            <Line X1="{Binding X1}" Y1="{Binding Y1}" X2="{Binding X2}" Y2="{Binding Y2}"
+                  Stroke="{Binding Color}" StrokeThickness="2"/>
+        </DataTemplate>
+    </ItemsControl.ItemTemplate>
+</ItemsControl>
+----
+
+[source,csharp]
+----
+public ObservableCollection<LineData> Lines { get; } = new();
+
+Lines.Add(new LineData { X1 = 0, Y1 = 0, X2 = 100, Y2 = 50, Color = "Black" });
+----
+
+* Das ViewModel enthält nur Daten (Koordinaten, Farbe als `string`), der Canvas zeichnet sie über das Template.
+* `Lines.Add(...)` zeichnet sofort, `Lines.Clear()` löscht die Zeichnung.
+* Für `Rectangle`/`Ellipse` die Position über `ItemContainerStyle` setzen (siehe „Listen und Templates“).
+
+=== Linienzug binden
+
+[source,xml]
+----
+<Polyline Points="{Binding Points}" Stroke="Blue" StrokeThickness="2"/>
+----
+
+[source,csharp]
+----
+public PointCollection Points { get; } = new();
+
+Points.Add(new Point(x, y));
+----
+
+* Eine `PointCollection` meldet neue Punkte selbst, der Linienzug wächst automatisch mit.
+* Gut für Diagramme, Pfade oder Freihandlinien.
+
+=== Mit der Maus zeichnen
+
+[source,xml]
+----
+<Canvas x:Name="canvas" Background="White"
+        MouseLeftButtonDown="Canvas_MouseDown" MouseMove="Canvas_MouseMove"/>
+----
+
+[source,csharp]
+----
+private Polyline _current;
+
+private void Canvas_MouseDown(object sender, MouseButtonEventArgs e)
+{
+    _current = new Polyline { Stroke = Brushes.Black, StrokeThickness = 2 };
+    _current.Points.Add(e.GetPosition(canvas));
+    canvas.Children.Add(_current);
+}
+
+private void Canvas_MouseMove(object sender, MouseEventArgs e)
+{
+    if (e.LeftButton == MouseButtonState.Pressed && _current != null)
+        _current.Points.Add(e.GetPosition(canvas));
+}
+----
+
+* `e.GetPosition(canvas)` liefert die Mausposition relativ zum Canvas.
+* `MouseMove` prüft, ob die linke Taste gedrückt ist. Nur dann wird weitergezeichnet.
+
+=== Transformationen
+
+[source,xml]
+----
+<Polygon Points="0,0 20,10 0,20" Fill="Green" RenderTransformOrigin="0.5,0.5">
+    <Polygon.RenderTransform>
+        <TransformGroup>
+            <ScaleTransform ScaleX="2" ScaleY="2"/>
+            <RotateTransform Angle="{Binding Angle}"/>
+            <TranslateTransform X="{Binding X}" Y="{Binding Y}"/>
+        </TransformGroup>
+    </Polygon.RenderTransform>
+</Polygon>
+----
+
+* `RotateTransform` dreht (Grad, im Uhrzeigersinn), `ScaleTransform` vergrößert, `TranslateTransform` verschiebt.
+* `TransformGroup` kombiniert mehrere Transformationen. Die Reihenfolge ist wichtig.
+* `RenderTransformOrigin="0.5,0.5"` dreht und skaliert um die Mitte statt um die linke obere Ecke.
+* Bindbar, daher gut geeignet, um eine Figur aus dem ViewModel zu bewegen und zu drehen.
+
+=== Bilder
+
+[source,xml]
+----
+<Image Source="/Images/logo.png" Width="100" Stretch="Uniform"/>
+----
+
+* Bilddatei ins Projekt legen und in den Eigenschaften die *Build Action* auf `Resource` setzen.
+* `Stretch`: `None`, `Fill`, `Uniform` (Seitenverhältnis behalten) oder `UniformToFill`.
+
+=== Koordinaten berechnen
+
+[source,csharp]
+----
+double rad = angle * Math.PI / 180;
+double x2 = x + length * Math.Cos(rad);
+double y2 = y - length * Math.Sin(rad);   // minus, weil Y nach unten wächst
+----
+
+* Berechnet den Endpunkt einer Linie aus Startpunkt, Winkel und Länge.
+* `Math.Sin/Cos` rechnen im Bogenmaß, daher Grad umrechnen.
 
 == Styles und Trigger
 
@@ -829,17 +1037,6 @@ if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out 
 ----
 
 * Wirft keine Exception. Die deutsche Kultur erwartet `,` als Dezimaltrennzeichen, `InvariantCulture` erwartet `.`.
-
-=== Grad in Bogenmaß
-
-[source,csharp]
-----
-double rad = degrees * Math.PI / 180;
-double x = startX + length * Math.Cos(rad);
-double y = startY - length * Math.Sin(rad);   // Bildschirm-Y wächst nach unten
-----
-
-* `Math.Sin/Cos` rechnen im Bogenmaß. Für Bewegung „nach oben“ Y subtrahieren.
 
 === Stack
 
