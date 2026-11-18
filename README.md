@@ -10,3 +10,6 @@ PDF neu erzeugen:
 ```sh
 asciidoctor-pdf WPF-Cheatsheet-de.adoc
 ```
+
+Bei jedem Push einer `.adoc`-Datei auf `main` baut eine GitHub Action das PDF automatisch neu und committet es
+(zusätzlich als Artifact im jeweiligen Workflow-Run verfügbar).
