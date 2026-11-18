@@ -1327,7 +1327,7 @@ ImportCommand = new DelegateCommand(async () =>
 ----
 
 * `File.Exists` als `CanExecute`: der Button ist nur aktiv, wenn die Datei existiert.
-* Daten, die ein Dialog-ViewModel beim Öffnen laden muss, im `Loaded`-Event oder über einen Command laden (siehe „Beim Start laden“).
+* Daten, die ein Dialog-ViewModel beim Öffnen laden muss, im `Loaded`-Event oder über einen Command laden (siehe „Beim Start laden (Loaded-Event)“).
 
 == Dependency Injection (DI)
 
@@ -1668,7 +1668,7 @@ foreach (var step in steps)
 
 * Einfache Alternative zum `DispatcherTimer`, wenn Schritte nacheinander sichtbar werden sollen.
 
-=== Beim Start laden
+=== Beim Start laden (Loaded-Event)
 
 [source,xml]
 ----
@@ -1677,13 +1677,67 @@ foreach (var step in steps)
 
 [source,csharp]
 ----
+// Code-Behind des Fensters
 private async void Window_Loaded(object sender, RoutedEventArgs e)
 {
-    await ((MainWindowViewModel)DataContext).LoadAsync();
+    if (DataContext is MainWindowViewModel vm)
+        await vm.LoadAsync();
 }
 ----
 
-* Ein Konstruktor kann nicht `await`en. Daher im `Loaded`-Event laden oder einen Command beim Start auslösen.
+* `Loaded` feuert, sobald das Fenster aufgebaut ist und der `DataContext` gesetzt wurde, kurz bevor es sichtbar wird.
+* Ein Konstruktor kann nicht `await`en, und im Fenster-Konstruktor ist der `DataContext` (vom Navigator/DI) noch nicht gesetzt.
+  Darum Daten im `Loaded`-Event laden.
+* `async void` ist hier erlaubt, weil es ein Event-Handler ist. Fehler in `LoadAsync` selbst abfangen (siehe „Fehler abfangen“).
+* `is MainWindowViewModel vm` statt hartem Cast: kein Absturz, wenn der `DataContext` (noch) fehlt.
+
+=== Loaded für alle Fenster (gemeinsame Basis)
+
+[source,csharp]
+----
+public abstract class BaseViewModel : INotifyPropertyChanged
+{
+    // ...
+    public virtual Task OnLoadedAsync() => Task.CompletedTask;   // überschreiben, wer laden muss
+}
+
+public class DetailViewModel : BaseViewModel
+{
+    public override async Task OnLoadedAsync() => Item = await _repository.GetByIdAsync(_id);
+}
+
+// im WindowNavigator vor window.ShowDialog():
+window.Loaded += async (_, _) => await viewModel.OnLoadedAsync();
+----
+
+* So braucht kein einziges Fenster Code-Behind: Der Navigator hängt das Laden an jedes Fenster, das er öffnet.
+* Für das Hauptfenster dieselbe Zeile in `App.OnStartup` vor `window.Show()`.
+
+=== Loaded rein in XAML (Behaviors, ohne Code-Behind)
+
+[source,xml]
+----
+<!-- NuGet: Microsoft.Xaml.Behaviors.Wpf -->
+<Window ...
+        xmlns:b="http://schemas.microsoft.com/xaml/behaviors">
+    <b:Interaction.Triggers>
+        <b:EventTrigger EventName="Loaded">
+            <b:InvokeCommandAction Command="{Binding LoadCommand}"/>
+        </b:EventTrigger>
+    </b:Interaction.Triggers>
+</Window>
+----
+
+* Ruft beim Event einen Command im ViewModel auf. Funktioniert mit jedem Event (`Closing`, `SelectionChanged`, `MouseDoubleClick` ...).
+* `PassEventArgsToCommand="True"` übergibt die EventArgs als Command-Parameter.
+
+=== Hinweise zu Loaded
+
+* `Loaded` kann *mehrmals* feuern, z. B. bei Controls in einem `TabControl` beim Tab-Wechsel. Bei Bedarf mit einem Flag nur einmal laden:
+  `if (_loaded) return; _loaded = true;`
+* Reihenfolge beim Öffnen: Konstruktor → `Loaded` → `ContentRendered` (Fenster ist gezeichnet) → `Activated`.
+* Gegenstücke: `Closing` (Schließen noch abbrechbar mit `e.Cancel = true`), `Closed` bzw. `Unloaded` (aufräumen, Timer stoppen).
+* `Loaded` gibt es auch an jedem Control (`<ListView Loaded="...">`), nicht nur am Fenster.
 
 === UI aus einem fremden Thread aktualisieren
 
@@ -1904,6 +1958,197 @@ var items = await context.Items.ToListAsync();
 * Pro Vorgang (Laden, Speichern, Import) einen eigenen Context verwenden. Einen einzigen für die ganze App nicht offen lassen.
 * Mit Dependency Injection stattdessen `IDbContextFactory` verwenden (siehe „Dependency Injection“).
 * Zwei `await`s auf demselben Context gleichzeitig lösen eine Exception aus. Immer nacheinander `await`en.
+
+== ViewModels testen (Unit-Tests)
+
+=== Testprojekt anlegen
+
+[source,sh]
+----
+dotnet new xunit -o MyApp.Tests
+dotnet add MyApp.Tests reference MyApp
+dotnet add MyApp.Tests package Moq
+----
+
+[source,xml]
+----
+<PropertyGroup>
+  <TargetFramework>net10.0-windows</TargetFramework>
+  <UseWPF>true</UseWPF>
+</PropertyGroup>
+----
+
+* Das Testprojekt braucht dasselbe `-windows`-Framework und `UseWPF`, weil das ViewModel `ICommand`/`CommandManager` verwendet.
+* Getestet wird nur das ViewModel, *kein* Fenster: Properties setzen, Commands ausführen, Ergebnis prüfen.
+* Ausführen: `dotnet test` oder im Test-Explorer. Einzelner Test: `dotnet test --filter "FullyQualifiedName~SaveCommand"`.
+
+=== Aufbau eines Tests (Arrange / Act / Assert)
+
+[source,csharp]
+----
+public class MainWindowViewModelTests
+{
+    [Fact]
+    public void Count_Zero_IsEmpty()
+    {
+        var vm = new MainWindowViewModel();   // Arrange: Objekt vorbereiten
+
+        vm.Count = 0;                         // Act: eine Aktion ausführen
+
+        Assert.True(vm.IsEmpty);              // Assert: Ergebnis prüfen
+    }
+
+    [Theory]
+    [InlineData("12", 12)]
+    [InlineData("abc", 0)]
+    public void Input_IsParsed(string input, int expected)
+    {
+        var vm = new MainWindowViewModel { Input = input };
+        Assert.Equal(expected, vm.Value);
+    }
+}
+----
+
+* `[Fact]` = ein Test, `[Theory]` + `[InlineData]` = derselbe Test mit mehreren Eingaben.
+* Testname nach dem Muster `Was_Bedingung_Erwartung`. Pro Test genau ein Verhalten prüfen.
+* Wichtige Asserts: `Assert.Equal(erwartet, ist)`, `True/False`, `Null/NotNull`, `Empty`, `Single`, `Contains`, `Throws<T>`.
+* MSTest statt xUnit: `[TestClass]`/`[TestMethod]`/`[DataRow]` und `Assert.AreEqual(erwartet, ist)`.
+
+=== PropertyChanged prüfen
+
+[source,csharp]
+----
+[Fact]
+public void Count_Set_RaisesPropertyChangedForIsEmpty()
+{
+    var vm = new MainWindowViewModel();
+    var changed = new List<string>();
+    vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+    vm.Count = 5;
+
+    Assert.Contains(nameof(vm.Count), changed);
+    Assert.Contains(nameof(vm.IsEmpty), changed);   // berechnete Property mitgemeldet?
+}
+----
+
+* Fängt alle gemeldeten Property-Namen ab. So sieht man, ob das UI aktualisiert würde.
+* Mit `Assert.Empty(changed)` prüft man, dass bei gleichem Wert *nichts* gemeldet wird.
+
+=== Command testen (CanExecute / Execute)
+
+[source,csharp]
+----
+[Fact]
+public void SaveCommand_WithoutName_IsDisabled()
+{
+    var vm = new MainWindowViewModel { Name = "" };
+
+    Assert.False(vm.SaveCommand.CanExecute(null));
+}
+
+[Fact]
+public void InputCommand_AppendsParameter()
+{
+    var vm = new MainWindowViewModel();
+
+    vm.InputCommand.Execute("7");                   // wie ein Button mit CommandParameter="7"
+
+    Assert.Equal("7", vm.Input);
+}
+----
+
+* `CanExecute(null)` entspricht „ist der Button aktiv?“, `Execute(...)` dem Klick.
+* Den Parameter so übergeben, wie er aus XAML kommt (meist als `string`).
+
+=== Abhängigkeiten ersetzen (Mock mit Moq)
+
+[source,csharp]
+----
+[Fact]
+public async Task LoadAsync_FillsItemsFromRepository()
+{
+    var repository = new Mock<IItemRepository>();
+    repository.Setup(r => r.GetAllAsync())
+              .ReturnsAsync(new List<Item> { new() { Name = "A" }, new() { Name = "B" } });
+    var vm = new MainWindowViewModel(repository.Object, Mock.Of<IWindowNavigator>());
+
+    await vm.LoadAsync();
+
+    Assert.Equal(2, vm.Items.Count);
+    repository.Verify(r => r.GetAllAsync(), Times.Once);
+}
+----
+
+* Deshalb verlangt das ViewModel *Interfaces* im Konstruktor: Im Test kommt statt Datenbank/Fenster eine Attrappe hinein.
+* `Setup(...).Returns(...)` / `.ReturnsAsync(...)` legt fest, was die Attrappe zurückgibt.
+* `Verify(..., Times.Once)` prüft, ob (und wie oft) eine Methode aufgerufen wurde. `Times.Never` für „darf nicht passieren“.
+* `Mock.Of<T>()` für Abhängigkeiten, die im Test keine Rolle spielen.
+* `It.IsAny<int>()` bzw. `It.Is<int>(x => x > 0)` als Platzhalter für Argumente.
+
+=== Async-Code testen
+
+[source,csharp]
+----
+// im ViewModel: Logik als Task-Methode, der Command ruft sie nur auf
+public async Task LoadAsync() { ... }
+LoadCommand = new DelegateCommand(async () => await LoadAsync());
+
+// im Test direkt die Task-Methode awaiten
+[Fact]
+public async Task LoadAsync_WhenRepositoryFails_SetsErrorMessage()
+{
+    var repository = new Mock<IItemRepository>();
+    repository.Setup(r => r.GetAllAsync()).ThrowsAsync(new InvalidOperationException("DB weg"));
+    var vm = new MainWindowViewModel(repository.Object, Mock.Of<IWindowNavigator>());
+
+    await vm.LoadAsync();
+
+    Assert.False(vm.IsBusy);
+    Assert.NotNull(vm.ErrorMessage);
+}
+----
+
+* Testmethode als `async Task` (nie `async void`) und mit `await` aufrufen.
+* `Command.Execute(...)` bei einem async-Command kehrt sofort zurück (`async void`). Darum die `Task`-Methode testen, nicht den Command.
+* Soll die Methode nicht `public` sein: `internal` machen und im App-Projekt `<InternalsVisibleTo Include="MyApp.Tests" />` eintragen.
+* Das Laden aus dem `Loaded`-Event (`OnLoadedAsync`) wird genauso getestet: einfach `await vm.OnLoadedAsync();` aufrufen.
+
+=== Dialog und Schließen testen
+
+[source,csharp]
+----
+[Fact]
+public async Task ImportAsync_DialogConfirmed_ReloadsList()
+{
+    var navigator = new Mock<IWindowNavigator>();
+    navigator.Setup(n => n.ShowDialog<ImportViewModel>()).Returns(true);   // „Benutzer klickt OK“
+    var repository = new Mock<IItemRepository>();
+    repository.Setup(r => r.GetAllAsync()).ReturnsAsync(new List<Item>());
+    var vm = new MainWindowViewModel(repository.Object, navigator.Object);
+
+    await vm.ImportAsync();
+
+    repository.Verify(r => r.GetAllAsync(), Times.Once);
+}
+
+[Fact]
+public void CloseCommand_ClosesWithFalse()
+{
+    var vm = new ImportViewModel();
+    bool? result = null;
+    vm.CloseAction = r => result = r;               // statt eines echten Fensters
+
+    vm.CloseCommand.Execute(null);
+
+    Assert.False(result);
+}
+----
+
+* Der gemockte Navigator öffnet kein Fenster. `Returns(true/false)` spielt die Antwort des Benutzers nach.
+* `CloseAction` im Test selbst setzen, dann sieht man, ob und womit das ViewModel schließen wollte.
+* `MessageBox.Show` direkt im ViewModel ist nicht testbar (der Test bleibt hängen). Dafür ein Interface wie
+  `IMessageService` injizieren und im Test mocken.
 
 == Häufige Fehler
 
