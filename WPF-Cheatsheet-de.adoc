@@ -393,11 +393,14 @@ CommandManager.InvalidateRequerySuggested();
 
 [source,xml]
 ----
-<TextBlock Text="{Binding Category.Name, TargetNullValue='<none>', FallbackValue='-'}"/>
+<TextBlock Text="{Binding Category.Name, FallbackValue='(keine)'}"/>
+<TextBlock Text="{Binding Description, TargetNullValue='(leer)'}"/>
 ----
 
-* `TargetNullValue`: wird angezeigt, wenn der Wert `null` ist (z. B. nullable Fremdschlüssel).
-* `FallbackValue`: wird angezeigt, wenn das Binding gar nicht funktioniert (Pfad nicht gefunden, Zwischenobjekt `null`).
+* `TargetNullValue`: wird angezeigt, wenn der *gebundene Wert selbst* `null` ist.
+* `FallbackValue`: wird angezeigt, wenn das Binding nicht aufgelöst werden kann, z. B. weil ein Zwischenobjekt `null` ist
+  (`Category` ist bei nullable Fremdschlüssel `null` → `Category.Name` zeigt den `FallbackValue`).
+* `<` und `>` sind in XAML-Attributen verboten. Für „<none>“ `&lt;none&gt;` schreiben.
 
 === Mehrere Werte kombinieren (MultiBinding)
 
@@ -464,11 +467,13 @@ public class EditViewModel : BaseViewModel, INotifyDataErrorInfo
 [source,xml]
 ----
 <TextBox x:Name="nameBox" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
-<TextBlock Text="{Binding (Validation.Errors)[0].ErrorContent, ElementName=nameBox}" Foreground="Red"/>
+<TextBlock Text="{Binding (Validation.Errors)/ErrorContent, ElementName=nameBox}" Foreground="Red"/>
 ----
 
 * WPF zeigt bei einem Fehler automatisch einen roten Rahmen um die `TextBox`.
-* Für die Fehlermeldung als Text die TextBox benennen (`x:Name`) und an `(Validation.Errors)[0]` binden.
+* Für die Fehlermeldung als Text die TextBox benennen (`x:Name`) und an `(Validation.Errors)/ErrorContent` binden
+  (`/` = aktuelles Element; anders als `[0]` ohne Binding-Fehler, wenn die Liste leer ist).
+* Der Fehler erscheint erst nach der ersten Eingabe. Für eine Prüfung von Anfang an `SetError(...)` auch im Konstruktor aufrufen.
 * Den Speichern-Command mit `() => !HasErrors` sperren.
 
 === Auswahl / Master-Detail
@@ -904,6 +909,44 @@ Point ToCanvas(Point p) => new((p.X - minX) * scale + Margin,
 
 == Styles und Trigger
 
+=== Button-Farbe ändern
+
+[source,xml]
+----
+<!-- 1. Fest im XAML -->
+<Button Content="OK" Background="SteelBlue" Foreground="White" BorderBrush="Navy"/>
+
+<!-- 2. Aus dem ViewModel (Property vom Typ string oder Brush) -->
+<Button Content="Status" Background="{Binding StatusColor}"/>
+
+<!-- 3. Abhängig von einem Zustand (DataTrigger) -->
+<Button Content="Speichern" Command="{Binding SaveCommand}">
+    <Button.Style>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="LightGray"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding HasChanges}" Value="True">
+                    <Setter Property="Background" Value="Orange"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Button.Style>
+</Button>
+----
+
+[source,csharp]
+----
+public string StatusColor => IsOk ? "LightGreen" : "IndianRed";   // für Variante 2
+okButton.Background = Brushes.Red;                                 // Code-Behind (x:Name="okButton")
+----
+
+* `Background` = Hintergrund, `Foreground` = Schriftfarbe, `BorderBrush` = Rahmen.
+* Ein `string` wie `"Red"` oder `"#FF8000"` wird beim Binding automatisch in einen `Brush` umgewandelt.
+* Für Variante 3 den Standardwert im Style setzen, *nicht* als Attribut am Button, sonst wirkt der Trigger nicht.
+* Hover- und Klick-Farbe kommen aus dem Standard-Template und lassen sich mit `Background` nicht ändern.
+  Dafür ein eigenes `ControlTemplate` verwenden (siehe „Aussehen komplett ändern“).
+* Für alle Buttons gleichzeitig: impliziter Style mit `<Setter Property="Background" .../>` (siehe unten).
+
 === Impliziter und benannter Style
 
 [source,xml]
@@ -1060,15 +1103,16 @@ Point ToCanvas(Point p) => new((p.X - minX) * scale + Margin,
 ----
 <Style x:Key="RoundButton" TargetType="Button">
     <Setter Property="Background" Value="SteelBlue"/>
+    <Setter Property="Padding" Value="8,4"/>
     <Setter Property="Template">
         <Setter.Value>
             <ControlTemplate TargetType="Button">
-                <Border Background="{TemplateBinding Background}" CornerRadius="10" Padding="8,4">
+                <Border Background="{TemplateBinding Background}" CornerRadius="10" Padding="{TemplateBinding Padding}">
                     <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsMouseOver" Value="True">
-                        <Setter Property="Opacity" Value="0.8"/>
+                        <Setter Property="Background" Value="RoyalBlue"/>
                     </Trigger>
                     <Trigger Property="IsEnabled" Value="False">
                         <Setter Property="Opacity" Value="0.4"/>
@@ -1131,7 +1175,11 @@ public class EqualsConverter : IValueConverter     // z. B. für RadioButtons
         => value?.ToString() == parameter?.ToString();
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
-        => value is true ? parameter : Binding.DoNothing;
+    {
+        if (value is not true) return Binding.DoNothing;
+        var type = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        return type.IsEnum ? Enum.Parse(type, (string)parameter) : parameter;
+    }
 }
 ----
 
@@ -1150,7 +1198,7 @@ public class EqualsConverter : IValueConverter     // z. B. für RadioButtons
 
 * `ConverterParameter` kommt als `string` in `parameter` an.
 * `Binding.DoNothing` in `ConvertBack`: den Wert nicht zurückschreiben (die abgewählte RadioButton soll nichts ändern).
-* `ConvertBack` gibt hier einen `string` zurück. Für eine `enum`-Property `Enum.Parse(targetType, (string)parameter)` verwenden.
+* Ist die Property ein `enum`, wandelt `Enum.Parse` den Parameter-String (`"Small"`) in den Enum-Wert um.
 
 == Controls
 
