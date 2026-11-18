@@ -1,6 +1,6 @@
 # WPF Cheat Sheet
 
-Kurze, allgemein verwendbare WPF/MVVM-Snippets (Layouts, Binding, Commands, Styles, Trigger, Templates, Zeichnen, Fenster-Navigation, Async, EF Core).
+Kurze, allgemein verwendbare WPF/MVVM-Snippets (Layouts, Binding, Commands, Styles, Trigger, Templates, Zeichnen, Fenster-Navigation, Dependency Injection, Async, EF Core).
 
 - [`WPF-Cheatsheet-de.adoc`](WPF-Cheatsheet-de.adoc) – AsciiDoc-Quelle
 - [`WPF-Cheatsheet-de.pdf`](WPF-Cheatsheet-de.pdf) – fertiges PDF

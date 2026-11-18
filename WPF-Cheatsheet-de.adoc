@@ -380,6 +380,97 @@ CommandManager.InvalidateRequerySuggested();
 * In einem `DataTemplate` ist der DataContext das *Element*, nicht das ViewModel.
 * `RelativeSource AncestorType=Window` greift auf den DataContext des Fensters zu. `{Binding}` übergibt das ganze Element.
 
+=== An sich selbst binden
+
+[source,xml]
+----
+<TextBox ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+----
+
+* `RelativeSource Self` bindet an eine andere Property desselben Elements.
+
+=== Null- und Ersatzwerte
+
+[source,xml]
+----
+<TextBlock Text="{Binding Category.Name, TargetNullValue='<none>', FallbackValue='-'}"/>
+----
+
+* `TargetNullValue`: wird angezeigt, wenn der Wert `null` ist (z. B. nullable Fremdschlüssel).
+* `FallbackValue`: wird angezeigt, wenn das Binding gar nicht funktioniert (Pfad nicht gefunden, Zwischenobjekt `null`).
+
+=== Mehrere Werte kombinieren (MultiBinding)
+
+[source,xml]
+----
+<TextBlock>
+    <TextBlock.Text>
+        <MultiBinding StringFormat="{}{0} ({1:d})">
+            <Binding Path="Name"/>
+            <Binding Path="CreationDate"/>
+        </MultiBinding>
+    </TextBlock.Text>
+</TextBlock>
+----
+
+* Setzt mehrere Properties in einen Text zusammen. Ohne `StringFormat` braucht es einen `IMultiValueConverter`.
+* Oft einfacher: eine berechnete Property im ViewModel (`public string Title => $"{Name} ({CreationDate:d})";`).
+
+=== Datum und Zahlen formatieren
+
+[source,xml]
+----
+<TextBlock Text="{Binding CreationDate, StringFormat=dd.MM.yyyy}"/>
+<TextBlock Text="{Binding CreationDate, StringFormat=d}"/>
+<TextBlock Text="{Binding Price, StringFormat=N2}"/>
+<GridViewColumn Header="Datum" DisplayMemberBinding="{Binding CreationDate, StringFormat=d}"/>
+----
+
+* WPF formatiert standardmäßig mit `en-US` (Datum `2/25/2025`). Für deutsches Format einmalig in `App.OnStartup`:
+  `FrameworkElement.LanguageProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(XmlLanguage.GetLanguage(CultureInfo.CurrentCulture.IetfLanguageTag)));`
+
+=== Eingaben prüfen (INotifyDataErrorInfo)
+
+[source,csharp]
+----
+public class EditViewModel : BaseViewModel, INotifyDataErrorInfo
+{
+    private readonly Dictionary<string, string> _errors = new();
+
+    private string _name;
+    public string Name
+    {
+        get => _name;
+        set
+        {
+            SetProperty(ref _name, value);
+            SetError(nameof(Name), string.IsNullOrWhiteSpace(value) ? "Name fehlt" : null);
+        }
+    }
+
+    private void SetError(string property, string error)
+    {
+        if (error == null) _errors.Remove(property); else _errors[property] = error;
+        ErrorsChanged?.Invoke(this, new DataErrorsChangedEventArgs(property));
+    }
+
+    public bool HasErrors => _errors.Count > 0;
+    public IEnumerable GetErrors(string propertyName)
+        => propertyName != null && _errors.TryGetValue(propertyName, out var e) ? new[] { e } : Array.Empty<string>();
+    public event EventHandler<DataErrorsChangedEventArgs> ErrorsChanged;
+}
+----
+
+[source,xml]
+----
+<TextBox x:Name="nameBox" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+<TextBlock Text="{Binding (Validation.Errors)[0].ErrorContent, ElementName=nameBox}" Foreground="Red"/>
+----
+
+* WPF zeigt bei einem Fehler automatisch einen roten Rahmen um die `TextBox`.
+* Für die Fehlermeldung als Text die TextBox benennen (`x:Name`) und an `(Validation.Errors)[0]` binden.
+* Den Speichern-Command mit `() => !HasErrors` sperren.
+
 === Auswahl / Master-Detail
 
 [source,xml]
@@ -897,6 +988,102 @@ Point ToCanvas(Point p) => new((p.X - minX) * scale + Margin,
 * Einen Wert einmal definieren und überall wiederverwenden.
 * `StaticResource` wird einmal beim Laden aufgelöst. `DynamicResource` aktualisiert sich, wenn die Ressource getauscht wird.
 
+=== Styles in eigene Datei auslagern (ResourceDictionary)
+
+[source,xml]
+----
+<!-- Styles/Styles.xaml  (Hinzufügen → Ressourcenwörterbuch) -->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Style TargetType="Button">
+        <Setter Property="Margin" Value="4"/>
+    </Style>
+</ResourceDictionary>
+
+<!-- App.xaml -->
+<Application.Resources>
+    <ResourceDictionary>
+        <ResourceDictionary.MergedDictionaries>
+            <ResourceDictionary Source="Styles/Styles.xaml"/>
+        </ResourceDictionary.MergedDictionaries>
+    </ResourceDictionary>
+</Application.Resources>
+----
+
+* So gelten die Styles in allen Fenstern. Mehrere Dateien einfach untereinander mergen.
+* Zusätzliche eigene Ressourcen kommen in das äußere `ResourceDictionary` neben `MergedDictionaries`.
+
+=== Style für Listeneinträge (ItemContainerStyle)
+
+[source,xml]
+----
+<ListView ItemsSource="{Binding Items}" AlternationCount="2">
+    <ListView.ItemContainerStyle>
+        <Style TargetType="ListViewItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Style.Triggers>
+                <Trigger Property="ItemsControl.AlternationIndex" Value="1">
+                    <Setter Property="Background" Value="#FFF0F0F0"/>
+                </Trigger>
+                <DataTrigger Binding="{Binding IsActive}" Value="False">
+                    <Setter Property="Foreground" Value="Gray"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </ListView.ItemContainerStyle>
+</ListView>
+----
+
+* `ItemContainerStyle` gestaltet die ganze Zeile (`ListViewItem`, `ListBoxItem`), nicht nur deren Inhalt.
+* `AlternationCount` + `AlternationIndex` färbt jede zweite Zeile.
+* `DataTrigger` bindet hier an das *Element* der Zeile.
+
+=== Setter mit komplexem Wert
+
+[source,xml]
+----
+<Style TargetType="Border">
+    <Setter Property="Background">
+        <Setter.Value>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="White" Offset="0"/>
+                <GradientStop Color="LightGray" Offset="1"/>
+            </LinearGradientBrush>
+        </Setter.Value>
+    </Setter>
+</Style>
+----
+
+=== Aussehen komplett ändern (ControlTemplate)
+
+[source,xml]
+----
+<Style x:Key="RoundButton" TargetType="Button">
+    <Setter Property="Background" Value="SteelBlue"/>
+    <Setter Property="Template">
+        <Setter.Value>
+            <ControlTemplate TargetType="Button">
+                <Border Background="{TemplateBinding Background}" CornerRadius="10" Padding="8,4">
+                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Opacity" Value="0.8"/>
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter Property="Opacity" Value="0.4"/>
+                    </Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter.Value>
+    </Setter>
+</Style>
+----
+
+* Ersetzt das Standard-Aussehen. `ContentPresenter` zeigt den `Content` (Text) an.
+* `TemplateBinding` übernimmt Properties vom Control (`Background`, `Padding`, ...).
+* Damit wirken auch `IsMouseOver`-Trigger auf den Hintergrund (siehe Hinweis bei „Property-Trigger“).
+
 == Converter
 
 === Convert-Methode
@@ -923,6 +1110,47 @@ public object Convert(object value, Type targetType, object parameter, CultureIn
 
 * `BooleanToVisibilityConverter` ist in WPF schon enthalten. Eigene Converter werden genauso als Ressource angelegt.
 * Oft ist ein DataTrigger oder eine zusätzliche Property einfacher als ein Converter.
+
+=== Eigener Converter mit Parameter
+
+[source,csharp]
+----
+public class IndexToBrushConverter : IValueConverter
+{
+    // Palette: Brush-Array, siehe „Farbe aus einem Index“
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is int i ? Palette[i % Palette.Length] : Brushes.Transparent;
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+public class EqualsConverter : IValueConverter     // z. B. für RadioButtons
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value?.ToString() == parameter?.ToString();
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is true ? parameter : Binding.DoNothing;
+}
+----
+
+[source,xml]
+----
+<Window ... xmlns:conv="clr-namespace:MyApp.Tools">
+    <Window.Resources>
+        <conv:IndexToBrushConverter x:Key="IndexToBrush"/>
+        <conv:EqualsConverter x:Key="Equals"/>
+    </Window.Resources>
+
+<Rectangle Fill="{Binding ColorIndex, Converter={StaticResource IndexToBrush}}"/>
+<RadioButton Content="Klein"
+             IsChecked="{Binding Size, Converter={StaticResource Equals}, ConverterParameter=Small}"/>
+----
+
+* `ConverterParameter` kommt als `string` in `parameter` an.
+* `Binding.DoNothing` in `ConvertBack`: den Wert nicht zurückschreiben (die abgewählte RadioButton soll nichts ändern).
+* `ConvertBack` gibt hier einen `string` zurück. Für eine `enum`-Property `Enum.Parse(targetType, (string)parameter)` verwenden.
 
 == Controls
 
@@ -1052,6 +1280,141 @@ ImportCommand = new DelegateCommand(async () =>
 
 * `File.Exists` als `CanExecute`: der Button ist nur aktiv, wenn die Datei existiert.
 * Daten, die ein Dialog-ViewModel beim Öffnen laden muss, im `Loaded`-Event oder über einen Command laden (siehe „Beim Start laden“).
+
+== Dependency Injection (DI)
+
+=== Prinzip
+
+[source,csharp]
+----
+public class MainWindowViewModel : BaseViewModel
+{
+    private readonly IItemRepository _repository;
+    private readonly IWindowNavigator _navigator;
+
+    public MainWindowViewModel(IItemRepository repository, IWindowNavigator navigator)
+    {
+        _repository = repository;
+        _navigator  = navigator;
+    }
+}
+----
+
+* Eine Klasse erzeugt ihre Abhängigkeiten nicht selbst (`new ItemRepository()`), sondern verlangt sie im *Konstruktor*.
+* Der DI-Container schaut sich den Konstruktor an, erzeugt jeden Parameter (rekursiv, mit dessen Parametern) und übergibt ihn.
+* Parameter als *Interface* deklarieren. So kann man die Implementierung tauschen oder im Test durch eine Attrappe ersetzen.
+* NuGet-Pakete: `Microsoft.Extensions.DependencyInjection`, für den DbContext zusätzlich der EF-Provider (z. B. `Microsoft.EntityFrameworkCore.SqlServer`).
+
+=== Container aufbauen (App.xaml.cs)
+
+[source,csharp]
+----
+public partial class App : Application
+{
+    public static IServiceProvider Services { get; private set; }
+
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+
+        var services = new ServiceCollection();
+        services.AddDbContextFactory<ApplicationDbContext>(o => o.UseSqlServer(connectionString));
+        services.AddTransient<IItemRepository, ItemRepository>();
+        services.AddSingleton<IWindowNavigator, WindowNavigator>();
+        services.AddTransient<MainWindowViewModel>();
+        services.AddTransient<MainWindow>();
+        services.AddTransient<DetailWindow>();
+        services.AddTransient<ImportWindow>();
+        Services = services.BuildServiceProvider();
+
+        var window = Services.GetRequiredService<MainWindow>();
+        window.DataContext = Services.GetRequiredService<MainWindowViewModel>();
+        window.Show();
+    }
+}
+----
+
+* `Add...<Interface, Klasse>()`: „wer `Interface` verlangt, bekommt `Klasse`“. `Add...<Klasse>()` registriert die Klasse für sich selbst.
+* `GetRequiredService<T>()` erzeugt das Objekt samt allen Abhängigkeiten. Wirft eine Exception, wenn etwas nicht registriert ist.
+* *Jedes* Fenster, das der Navigator öffnet, muss registriert sein. Dialog-ViewModels mit Laufzeitparametern (z. B. `int id`)
+  werden *nicht* registriert, die erzeugt der Navigator (siehe unten).
+* `StartupUri` aus `App.xaml` entfernen und keinen `<Window.DataContext>` im XAML setzen.
+* Nur hier in `App` direkt auf `Services` zugreifen. Überall sonst über den Konstruktor (sonst ist es kein DI, sondern „Service Locator“).
+
+=== Lebensdauer
+
+[cols="1,3"]
+|===
+| `AddTransient` | Bei jeder Anforderung ein *neues* Objekt. Standard für ViewModels, Fenster, Repositories.
+| `AddSingleton` | Ein Objekt für die ganze App. Für Navigator, Einstellungen, Caches.
+| `AddScoped`    | Eines pro Scope. WPF hat keine automatischen Scopes, ohne `CreateScope()` verhält es sich wie Singleton.
+|===
+
+* Ein Singleton darf keine Transient/Scoped-Objekte im Konstruktor speichern, sonst leben diese ungewollt ewig mit.
+* Fenster immer `Transient`: ein geschlossenes Fenster kann nicht erneut geöffnet werden.
+
+=== DbContext mit DI
+
+[source,csharp]
+----
+public class ItemRepository : IItemRepository
+{
+    private readonly IDbContextFactory<ApplicationDbContext> _factory;
+
+    public ItemRepository(IDbContextFactory<ApplicationDbContext> factory) => _factory = factory;
+
+    public async Task<List<Item>> GetAllAsync()
+    {
+        await using var context = await _factory.CreateDbContextAsync();
+        return await context.Items.ToListAsync();
+    }
+}
+----
+
+* `AddDbContext` registriert den Context als *Scoped*. In WPF wäre das ohne Scope ein einziger Context für die ganze Laufzeit.
+* Daher `AddDbContextFactory` verwenden und pro Vorgang einen kurzlebigen Context erzeugen (`await using`).
+* Der `ApplicationDbContext` braucht dafür einen Konstruktor `(DbContextOptions<ApplicationDbContext> options) : base(options)`.
+
+=== WindowNavigator mit DI (ViewModel mit Parametern)
+
+[source,csharp]
+----
+public class WindowNavigator : IWindowNavigator
+{
+    private readonly IServiceProvider _services;
+    private readonly Dictionary<Type, Type> _windows = new()
+    {
+        [typeof(DetailViewModel)] = typeof(DetailWindow),
+        [typeof(ImportViewModel)] = typeof(ImportWindow),
+    };
+
+    public WindowNavigator(IServiceProvider services) => _services = services;
+
+    public bool? ShowDialog<TViewModel>(params object[] args) where TViewModel : BaseViewModel
+    {
+        var viewModel = ActivatorUtilities.CreateInstance<TViewModel>(_services, args);
+        var window = (Window)_services.GetRequiredService(_windows[typeof(TViewModel)]);
+        window.DataContext = viewModel;
+        window.Owner = Application.Current.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive);
+        viewModel.CloseAction = result => window.DialogResult = result;
+        return window.ShowDialog();
+    }
+}
+
+// Aufruf im ViewModel
+_navigator.ShowDialog<DetailViewModel>(SelectedItem.Id);
+if (_navigator.ShowDialog<ImportViewModel>() == true) await LoadAsync();
+
+// Konstruktor: Laufzeitwert + Services gemischt
+public DetailViewModel(int id, IItemRepository repository) { ... }
+----
+
+* Problem: Der Container kennt Laufzeitwerte wie die ausgewählte Id nicht.
+* `ActivatorUtilities.CreateInstance` nimmt die übergebenen `args` und holt alle übrigen Parameter aus dem Container.
+* `IServiceProvider` lässt sich selbst injizieren. Den Navigator in DI als Singleton registrieren, die Fenster als Transient.
+* Ersetzt die Variante ohne DI: Im Interface `IWindowNavigator` steht dann nur noch
+  `bool? ShowDialog<TViewModel>(params object[] args) where TViewModel : BaseViewModel;`,
+  und Aufrufe wie `ShowDialog(new DetailViewModel(...))` werden zu `ShowDialog<DetailViewModel>(...)`.
 
 == Timer und Dialoge
 
@@ -1491,6 +1854,7 @@ var items = await context.Items.ToListAsync();
 ----
 
 * Pro Vorgang (Laden, Speichern, Import) einen eigenen Context verwenden. Einen einzigen für die ganze App nicht offen lassen.
+* Mit Dependency Injection stattdessen `IDbContextFactory` verwenden (siehe „Dependency Injection“).
 * Zwei `await`s auf demselben Context gleichzeitig lösen eine Exception aus. Immer nacheinander `await`en.
 
 == Häufige Fehler
