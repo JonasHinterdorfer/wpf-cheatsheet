@@ -143,19 +143,38 @@ Items.Clear();
 
 == Commands
 
-=== CanExecuteChanged an den CommandManager hängen
+=== DelegateCommand (RelayCommand)
 
 [source,csharp]
 ----
-public event EventHandler CanExecuteChanged
+public class DelegateCommand : ICommand
 {
-    add => CommandManager.RequerySuggested += value;
-    remove => CommandManager.RequerySuggested -= value;
+    private readonly Action<object> _execute;
+    private readonly Func<object, bool> _canExecute;
+
+    public DelegateCommand(Action<object> execute, Func<object, bool> canExecute = null)
+    {
+        _execute = execute;
+        _canExecute = canExecute;
+    }
+
+    public DelegateCommand(Action execute, Func<bool> canExecute = null)
+        : this(_ => execute(), canExecute == null ? null : _ => canExecute()) { }
+
+    public bool CanExecute(object parameter) => _canExecute?.Invoke(parameter) ?? true;
+    public void Execute(object parameter) => _execute(parameter);
+
+    public event EventHandler CanExecuteChanged
+    {
+        add => CommandManager.RequerySuggested += value;
+        remove => CommandManager.RequerySuggested -= value;
+    }
 }
 ----
 
-* Kernstück einer eigenen `ICommand`-Klasse (z. B. `DelegateCommand` / `RelayCommand`, die `Action` + `Func<bool>` speichert).
-* WPF prüft `CanExecute` damit nach jeder Benutzereingabe automatisch neu.
+* Speichert, was der Command tut (`Action`) und wann er erlaubt ist (`Func<bool>`). Ohne zweites Argument ist er immer aktiv.
+* Zwei Konstruktoren: `() => ...` ohne Parameter oder `p => ...` mit `CommandParameter`.
+* Über `CommandManager.RequerySuggested` prüft WPF `CanExecute` nach jeder Benutzereingabe automatisch neu.
 
 === Command im ViewModel anlegen
 
@@ -371,6 +390,68 @@ CommandManager.InvalidateRequerySuggested();
 
 * `SelectedItem` bindet TwoWay an eine Property im ViewModel.
 * `DisplayMemberPath` zeigt eine Property an, ohne ein Template zu schreiben.
+
+=== ComboBox mit Eintrag „<All>“
+
+[source,csharp]
+----
+public ObservableCollection<Category> Categories { get; } = new();
+
+Categories.Clear();
+Categories.Add(new Category { Id = 0, Name = "<All>" });   // Platzhalter, nie speichern
+foreach (var c in await _repository.GetCategoriesAsync()) Categories.Add(c);
+SelectedCategory = Categories[0];                         // Vorauswahl
+
+int? filterId = SelectedCategory?.Id is null or 0 ? null : SelectedCategory.Id;
+----
+
+[source,xml]
+----
+<ComboBox ItemsSource="{Binding Categories}" SelectedItem="{Binding SelectedCategory}"
+          DisplayMemberPath="Name"/>
+----
+
+* Der Platzhalter ist ein normales Objekt in der Liste. Beim Filtern wird er in `null` (= kein Filter) übersetzt.
+* Bei einem *nullable* Fremdschlüssel kann man genauso einen Eintrag „<none>“ ergänzen oder `null` in die Liste legen (wird leer angezeigt).
+* `SelectedItem` braucht dieselbe *Instanz* wie in `ItemsSource`. Ein Objekt aus einer anderen Abfrage wird nicht ausgewählt, daher per Id suchen:
+  `SelectedCategory = Categories.FirstOrDefault(c => c.Id == item.CategoryId);`
+
+=== Bearbeiten-Modus (Edit / Update)
+
+[source,csharp]
+----
+private bool _isEditing;
+public bool IsEditing
+{
+    get => _isEditing;
+    set
+    {
+        if (SetProperty(ref _isEditing, value))
+            OnPropertyChanged(nameof(IsNotEditing));
+    }
+}
+public bool IsNotEditing => !IsEditing;
+
+EditCommand   = new DelegateCommand(() => IsEditing = true,
+                                    () => SelectedItem != null && !IsEditing);
+UpdateCommand = new DelegateCommand(async () =>
+{
+    await SaveAsync();
+    IsEditing = false;
+    await LoadAsync();
+}, () => IsEditing);
+----
+
+[source,xml]
+----
+<ListView ... IsEnabled="{Binding IsNotEditing}"/>   <!-- während Edit keine andere Auswahl -->
+<TextBox  Text="{Binding EditName}" IsReadOnly="{Binding IsNotEditing}"/>
+<ComboBox ... IsEnabled="{Binding IsEditing}"/>
+----
+
+* `ComboBox` hat kein sinnvolles `IsReadOnly`, daher `IsEnabled` verwenden.
+* Für eine umgekehrte `bool`-Bindung ist eine zweite Property (`IsNotEditing`) einfacher als ein Converter.
+* Nur `Update` speichert. Bearbeitet wird eine Kopie der Werte (z. B. `EditName`), die beim Wechsel der Auswahl neu gesetzt wird.
 
 == Listen und Templates
 
@@ -657,6 +738,79 @@ double y2 = y - length * Math.Sin(rad);   // minus, weil Y nach unten wächst
 * Berechnet den Endpunkt einer Linie aus Startpunkt, Winkel und Länge.
 * `Math.Sin/Cos` rechnen im Bogenmaß, daher Grad umrechnen.
 
+=== Richtung als Index (8 Nachbarn)
+
+[source,csharp]
+----
+//  0 1 2
+//  7 · 3
+//  6 5 4
+private static readonly (int Dx, int Dy)[] Steps =
+    { (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0) };
+
+var (dx, dy) = Steps[direction];
+double x2 = x + dx * repeat * stepSize;
+double y2 = y + dy * repeat * stepSize;
+----
+
+* Ohne Trigonometrie: jede Richtung ist ein fester Schritt in X und Y. „Oben“ ist `Dy = -1`, weil Y nach unten wächst.
+* Das Array in derselben Reihenfolge wie die Nummerierung der Angabe schreiben.
+* Eine Bewegung mit Wiederholung `n` ist eine Linie von `(x, y)` nach `(x + dx·n·stepSize, y + dy·n·stepSize)`. Danach `x = x2; y = y2;`.
+
+=== Farbe aus einem Index
+
+[source,csharp]
+----
+private static readonly Brush[] Palette =
+{
+    Brushes.Black, Brushes.Red, Brushes.Green, Brushes.Blue,
+    Brushes.Orange, Brushes.Purple, Brushes.Brown, Brushes.DeepPink
+};
+
+Brush brush = Palette[index % Palette.Length];
+----
+
+* Gespeicherte Farbnummern über ein Array in einen `Brush` umwandeln. `%` verhindert bei Index ≥ 0 eine `IndexOutOfRangeException`.
+* Ist die Farbe `null` („nicht zeichnen“), wird nur die Position weitergerechnet und keine Linie hinzugefügt.
+* `Brush` kann direkt eine Property der Linien-Daten sein und an `Stroke` gebunden werden.
+
+=== Zeichnung auf die Fläche skalieren
+
+[source,csharp]
+----
+// 1. Zuerst alle Punkte in "Rohkoordinaten" berechnen (Start bei 0,0)
+double minX = points.Min(p => p.X), maxX = points.Max(p => p.X);
+double minY = points.Min(p => p.Y), maxY = points.Max(p => p.Y);
+
+// 2. Faktor so wählen, dass Breite UND Höhe hineinpassen
+const double Size = 400, Margin = 10;
+double scale = Math.Min((Size - 2 * Margin) / Math.Max(maxX - minX, 1),
+                        (Size - 2 * Margin) / Math.Max(maxY - minY, 1));
+
+// 3. Jeden Punkt umrechnen
+Point ToCanvas(Point p) => new((p.X - minX) * scale + Margin,
+                               (p.Y - minY) * scale + Margin);
+----
+
+* Erst die Bounding Box (min/max) bestimmen, dann verschieben (`- minX`) und skalieren (`* scale`).
+* `Math.Min` der beiden Faktoren behält das Seitenverhältnis. `Math.Max(..., 1)` verhindert eine Division durch 0.
+* Negative Koordinaten (Turtle läuft nach links/oben) sind so kein Problem.
+
+=== Alternative: Viewbox skaliert automatisch
+
+[source,xml]
+----
+<Viewbox Stretch="Uniform">
+    <ItemsControl ItemsSource="{Binding Lines}" Width="{Binding DrawWidth}" Height="{Binding DrawHeight}">
+        ...   <!-- Canvas als ItemsPanel wie oben -->
+    </ItemsControl>
+</Viewbox>
+----
+
+* `Viewbox` vergrößert/verkleinert seinen Inhalt passend zum Fenster. Der Canvas braucht dafür eine feste Größe
+  (`DrawWidth = maxX - minX`). Verschieben (`- minX`, `- minY`) muss man trotzdem selbst.
+* Die Linienstärke wird mitskaliert. Für dünne Linien eher die Rechnung oben verwenden.
+
 == Styles und Trigger
 
 === Impliziter und benannter Style
@@ -788,6 +942,116 @@ public object Convert(object value, Type targetType, object parameter, CultureIn
 * `TextBlock` (Property `Text`) ist schlanker als `Label` (Property `Content`, unterstützt Zugriffstasten mit `_`).
 * `IsChecked` ist `bool?`, lässt sich aber an `bool` binden.
 * `IsDefault`: Enter löst den Button aus. `IsCancel`: Esc löst ihn aus.
+
+== Fenster mit MVVM (WindowNavigator)
+
+=== Schließen aus dem ViewModel (BaseViewModel)
+
+[source,csharp]
+----
+public abstract class BaseViewModel : INotifyPropertyChanged
+{
+    // ... PropertyChanged, OnPropertyChanged, SetProperty (siehe oben)
+
+    public Action<bool> CloseAction { get; set; }
+
+    protected void Close(bool result = true) => CloseAction?.Invoke(result);
+}
+----
+
+* Das ViewModel kennt das Fenster nicht. Es ruft nur `Close(...)` auf, der Navigator hängt die echte Aktion ein.
+* `bool` statt `bool?`: `DialogResult = null` würde das Fenster *nicht* schließen.
+
+=== WindowNavigator
+
+[source,csharp]
+----
+public interface IWindowNavigator
+{
+    bool? ShowDialog(BaseViewModel viewModel);
+}
+
+public class WindowNavigator : IWindowNavigator
+{
+    private readonly Dictionary<Type, Func<Window>> _windows = new();
+
+    public void Register<TViewModel, TWindow>() where TWindow : Window, new()
+        => _windows[typeof(TViewModel)] = () => new TWindow();
+
+    public bool? ShowDialog(BaseViewModel viewModel)
+    {
+        var window = _windows[viewModel.GetType()]();
+        window.DataContext = viewModel;
+        window.Owner = Application.Current.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive);
+        viewModel.CloseAction = result => window.DialogResult = result;
+        return window.ShowDialog();
+    }
+}
+----
+
+* Ordnet jedem ViewModel-Typ ein Fenster zu, setzt den `DataContext` und öffnet es modal.
+* `DialogResult` setzen schließt ein mit `ShowDialog()` geöffnetes Fenster und liefert den Wert als Rückgabe.
+* Über das Interface bleibt das ViewModel testbar und kennt keine `Window`-Klassen.
+
+=== Registrieren und Startfenster (App.xaml.cs)
+
+[source,csharp]
+----
+protected override void OnStartup(StartupEventArgs e)
+{
+    base.OnStartup(e);
+
+    var navigator = new WindowNavigator();
+    navigator.Register<DetailViewModel, DetailWindow>();
+    navigator.Register<ImportViewModel, ImportWindow>();
+
+    new MainWindow { DataContext = new MainWindowViewModel(navigator) }.Show();
+}
+----
+
+* `StartupUri` aus `App.xaml` entfernen, sonst wird das Hauptfenster doppelt geöffnet.
+* Den `<Window.DataContext>` im XAML des Hauptfensters entfernen, weil das ViewModel jetzt Parameter bekommt.
+
+=== Dialog öffnen und Daten übergeben
+
+[source,csharp]
+----
+private readonly IWindowNavigator _navigator;
+
+public MainWindowViewModel(IWindowNavigator navigator)
+{
+    _navigator = navigator;
+
+    DetailsCommand = new DelegateCommand(
+        () => _navigator.ShowDialog(new DetailViewModel(SelectedItem.Id)),
+        () => SelectedItem != null);
+
+    ImportCommand = new DelegateCommand(async () =>
+    {
+        if (_navigator.ShowDialog(new ImportViewModel()) == true)
+            await LoadAsync();                       // Liste nach dem Import neu laden
+    });
+}
+----
+
+* Daten werden über den Konstruktor des neuen ViewModels übergeben (Id oder ganzes Objekt).
+* `ShowDialog` wartet, bis das Fenster zu ist. Danach kann man das Ergebnis auswerten und neu laden.
+
+=== Im Dialog-ViewModel schließen
+
+[source,csharp]
+----
+CloseCommand  = new DelegateCommand(() => Close(false));
+
+ImportCommand = new DelegateCommand(async () =>
+{
+    await ImportAsync();
+    Close(true);                                 // Fenster zu, Aufrufer bekommt true
+}, () => File.Exists(FileName));
+----
+
+* `File.Exists` als `CanExecute`: der Button ist nur aktiv, wenn die Datei existiert.
+* Daten, die ein Dialog-ViewModel beim Öffnen laden muss, im `Loaded`-Event oder über einen Command laden (siehe „Beim Start laden“).
 
 == Timer und Dialoge
 
@@ -1049,6 +1313,185 @@ double peek = stack.Peek();   // nur lesen
 ----
 
 * LIFO-Speicher, z. B. für Rechner oder Undo-Funktionen.
+
+=== Text zeichenweise parsen (Zahl als Prefix)
+
+[source,csharp]
+----
+int prefix = 0;                     // z. B. "12B" => prefix 12, Kommando 'B'
+foreach (char c in text)
+{
+    if (char.IsAsciiDigit(c))
+    {
+        prefix = prefix * 10 + (c - '0');    // mehrstellige Zahl aufbauen
+        continue;
+    }
+
+    int count = prefix == 0 ? 1 : prefix;
+    if (c == '$')                    color = prefix;
+    else if (c is >= 'A' and <= 'H') AddMove(c - 'A', count, color);   // Großbuchstabe: zeichnen
+    else if (c is >= 'a' and <= 'h') AddMove(c - 'a', count, null);    // Kleinbuchstabe: nur bewegen
+    else continue;                   // unbekanntes Zeichen ignorieren, Prefix bleibt
+
+    prefix = 0;                      // nach jedem Kommando zurücksetzen
+}
+----
+
+* `c - 'A'` macht aus einem Buchstaben eine Zahl (`'A'` → 0, `'B'` → 1, ...), `c - '0'` aus einer Ziffer.
+* `c is >= 'A' and <= 'H'` prüft einen Bereich (Pattern Matching).
+* Fehlt die Zahl (oder ist sie `0`), gilt `1`. Leerzeichen und Zeilenumbrüche fallen in das `else continue`.
+
+=== Dateien, Ordner und Pfade
+
+[source,csharp]
+----
+foreach (var dir in Directory.GetDirectories(root))          // nur eine Ebene tief
+    foreach (var file in Directory.GetFiles(dir, "*.txt"))
+    {
+        string folder = Path.GetFileName(dir);                // "Kevin"
+        string name   = Path.GetFileNameWithoutExtension(file); // "KevinDrawing1_20250225"
+        string rel    = Path.GetRelativePath(root, file);       // "Kevin\KevinDrawing1_20250225.txt"
+        string text   = await File.ReadAllTextAsync(file);
+    }
+
+bool exists = File.Exists(path);
+----
+
+* `Path.GetFileName` auf einen Ordnerpfad (ohne abschließendes `\`) liefert den Ordnernamen. `Directory.GetDirectories` liefert Pfade ohne `\` am Ende.
+* `Directory.GetFiles(dir, "*.txt", SearchOption.AllDirectories)` sucht rekursiv. Ohne Option nur im angegebenen Ordner.
+
+=== Datum aus Text (fixes Format)
+
+[source,csharp]
+----
+string last = name.Split('_').Last();                        // "20250225"
+DateTime date = DateTime.TryParseExact(last, "yyyyMMdd", CultureInfo.InvariantCulture,
+                                       DateTimeStyles.None, out var d)
+    ? d
+    : DateTime.Today;                                         // Fallback
+----
+
+* `TryParseExact` akzeptiert nur genau dieses Format und liefert bei ungültigen Werten (z. B. `20251399`) `false`.
+* `MM` = Monat, `mm` = Minuten.
+
+=== Liste als Text
+
+[source,csharp]
+----
+string text = string.Join(",", item.Tags.Select(t => t.Name));   // "C1,C3"
+----
+
+== Datenbank (EF Core)
+
+=== Gefiltert und sortiert in der Datenbank abfragen
+
+[source,csharp]
+----
+public async Task<List<ItemDto>> GetItemsAsync(int? categoryId)
+{
+    IQueryable<Item> query = _context.Items;
+    if (categoryId != null)
+        query = query.Where(i => i.CategoryId == categoryId);   // Filter läuft als SQL
+
+    return await query
+        .OrderBy(i => i.CreationDate)
+        .Select(i => new ItemDto
+        {
+            Id           = i.Id,
+            Name         = i.Name,
+            CreationDate = i.CreationDate,
+            Category     = i.Category != null ? i.Category.Name : null,
+            PartCount    = i.Parts.Count,                                   // nur die Anzahl
+            Tags         = string.Join(",", i.Tags.Select(t => t.Name))     // m:n als Text
+        })
+        .ToListAsync();
+}
+----
+
+* Alles vor `ToListAsync()` wird in SQL übersetzt. So wird nie die ganze Tabelle geladen.
+* `Where` nur anhängen, wenn ein Filter gesetzt ist (`null` = alle).
+* `Select` in ein DTO lädt nur die angezeigten Spalten. `Parts.Count` wird zu `COUNT(*)`, nicht zum Laden aller Elemente.
+* `string.Join` im letzten `Select` ist erlaubt. Je nach Datenbank übersetzt EF es nach SQL oder baut den Text am Ende in C#.
+
+=== Mit abhängigen Daten laden (Include)
+
+[source,csharp]
+----
+var item = await _context.Items
+    .Include(i => i.Category)
+    .Include(i => i.Parts.OrderBy(p => p.SeqNo))
+    .SingleAsync(i => i.Id == id);
+----
+
+* Ohne `Include` sind Navigation-Properties `null` bzw. leer.
+* Ein `OrderBy` im `Include` sortiert die geladenen Kind-Elemente.
+
+=== Neu anlegen über Navigation-Properties
+
+[source,csharp]
+----
+var category = await _context.Categories.SingleOrDefaultAsync(c => c.Name == categoryName)
+               ?? new Category { Name = categoryName };     // existiert nicht → neu
+
+var item = new Item { Name = name, CreationDate = DateTime.Today, Category = category };
+for (int i = 0; i < parts.Count; i++)
+    item.Parts.Add(new Part { SeqNo = i + 1, Value = parts[i] });
+
+_context.Items.Add(item);          // Category und Parts werden automatisch mitgespeichert
+await _context.SaveChangesAsync();
+----
+
+* Objekte über Navigation-Properties verbinden (`Category = ...`, `Parts.Add(...)`), keine Ids von Hand setzen.
+* Ein einziges `Add` des Wurzelobjekts reicht. Kein `AddRange` für die Kinder nötig.
+* Die `Id` vergibt die Datenbank beim `SaveChanges`.
+* `SingleOrDefaultAsync` fragt die Datenbank und sieht noch nicht gespeicherte neue Objekte nicht. Bei mehreren Datensätzen
+  mit derselben neuen Category entweder nach jedem Datensatz `SaveChanges` aufrufen oder zusätzlich in
+  `_context.Categories.Local` bzw. einem `Dictionary<string, Category>` suchen, sonst entstehen Duplikate.
+* Die Liste in der Entity initialisieren: `public List<Part> Parts { get; set; } = new();`
+
+=== Transaktion
+
+[source,csharp]
+----
+await using var transaction = await _context.Database.BeginTransactionAsync();
+try
+{
+    // ... Add / Änderungen ...
+    await _context.SaveChangesAsync();
+    await transaction.CommitAsync();
+}
+catch
+{
+    await transaction.RollbackAsync();
+    throw;
+}
+----
+
+* Alles zwischen Begin und Commit wird ganz oder gar nicht gespeichert. Z. B. eine Transaktion pro importierter Datei.
+* Ein einzelnes `SaveChanges` ist schon für sich eine Transaktion. Explizit nötig ist sie bei mehreren `SaveChanges`.
+
+=== Ändern
+
+[source,csharp]
+----
+var item = await _context.Items.FindAsync(id);   // geladen = wird überwacht (Tracking)
+item.CategoryId = newCategoryId;                 // int? → null erlaubt
+await _context.SaveChangesAsync();               // erzeugt nur ein UPDATE
+----
+
+* Geladene Entities werden überwacht. Ändern und `SaveChanges` reicht, kein `Update(...)` nötig.
+* DTOs aus einer `Select`-Abfrage werden *nicht* überwacht. Daher zum Ändern die Entity per Id neu laden.
+
+=== DbContext in WPF
+
+[source,csharp]
+----
+await using var context = new ApplicationDbContext();
+var items = await context.Items.ToListAsync();
+----
+
+* Pro Vorgang (Laden, Speichern, Import) einen eigenen Context verwenden. Einen einzigen für die ganze App nicht offen lassen.
+* Zwei `await`s auf demselben Context gleichzeitig lösen eine Exception aus. Immer nacheinander `await`en.
 
 == Häufige Fehler
 
