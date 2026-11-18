@@ -581,7 +581,7 @@ public object Convert(object value, Type targetType, object parameter, CultureIn
 * `IsChecked` ist `bool?`, lässt sich aber an `bool` binden.
 * `IsDefault`: Enter löst den Button aus. `IsCancel`: Esc löst ihn aus.
 
-== Timer, Async, Dialoge
+== Timer und Dialoge
 
 === DispatcherTimer
 
@@ -594,25 +594,6 @@ timer.Start();   // timer.Stop(); timer.IsEnabled
 
 * Feuert im UI-Thread, daher dürfen Properties und `ObservableCollection` direkt geändert werden.
 * `System.Timers.Timer` läuft in einem anderen Thread und stürzt ab, wenn er das UI berührt.
-
-=== Warten ohne Einfrieren
-
-[source,csharp]
-----
-await Task.Delay(500);
-----
-
-* Pausiert, ohne das UI zu blockieren. `Thread.Sleep` friert das Fenster ein.
-* Das Lambda eines Commands kann `async` sein: `new DelegateCommand(async () => { ... })`.
-
-=== UI aus einem Hintergrund-Thread aktualisieren
-
-[source,csharp]
-----
-Application.Current.Dispatcher.Invoke(() => Status = "Fertig");
-----
-
-* Leitet den Code in den UI-Thread um.
 
 === Neues Fenster öffnen
 
@@ -646,6 +627,197 @@ private void OkButton_Click(object sender, RoutedEventArgs e) { ... }
 ----
 
 * Klassischer Weg ohne MVVM. `x:Name` macht das Control im Code-Behind als Feld verfügbar.
+
+== Async / Await
+
+=== Grundregel
+
+[source,csharp]
+----
+await Task.Delay(500);        // gut: UI bleibt bedienbar
+Thread.Sleep(500);            // schlecht: Fenster friert ein
+----
+
+* `await` gibt den UI-Thread frei, solange gewartet wird. Danach läuft der Code automatisch im UI-Thread weiter.
+* Darum dürfen nach einem `await` Properties und `ObservableCollection` direkt geändert werden.
+
+=== Async-Command
+
+[source,csharp]
+----
+LoadCommand = new DelegateCommand(async () => await LoadAsync());
+
+private async Task LoadAsync()
+{
+    var data = await _service.GetDataAsync();
+    Items.Clear();
+    foreach (var item in data) Items.Add(item);
+}
+----
+
+* Die Logik in eine `async Task`-Methode legen, der Command ruft sie nur auf.
+* Weil `DelegateCommand` eine `Action` erwartet, wird das Lambda zu `async void`. Eine Exception darin bringt die App zum Absturz, daher abfangen (siehe unten).
+
+=== Async-Event-Handler
+
+[source,csharp]
+----
+private async void LoadButton_Click(object sender, RoutedEventArgs e)
+{
+    await LoadAsync();
+}
+----
+
+* `async void` ist *nur* bei Event-Handlern erlaubt. Alle anderen async-Methoden geben `Task` oder `Task<T>` zurück.
+
+=== Rechenintensive Arbeit auslagern
+
+[source,csharp]
+----
+int result = await Task.Run(() => HeavyCalculation(input));
+Result = result;   // wieder im UI-Thread
+----
+
+* `Task.Run` führt CPU-lastigen Code in einem Hintergrund-Thread aus.
+* Innerhalb von `Task.Run` keine UI-Elemente oder gebundenen Collections ändern. Das Ergebnis erst nach dem `await` zuweisen.
+* I/O-Methoden (`HttpClient`, `File.ReadAllTextAsync`) sind schon asynchron und brauchen kein `Task.Run`.
+
+=== Busy-Status und Button sperren
+
+[source,csharp]
+----
+private bool _isBusy;
+public bool IsBusy
+{
+    get => _isBusy;
+    set => SetProperty(ref _isBusy, value);
+}
+
+LoadCommand = new DelegateCommand(async () =>
+{
+    IsBusy = true;
+    try { await LoadAsync(); }
+    finally
+    {
+        IsBusy = false;
+        CommandManager.InvalidateRequerySuggested();
+    }
+}, () => !IsBusy);
+----
+
+* Verhindert Doppelklicks, solange die Aufgabe läuft.
+* `finally` stellt sicher, dass `IsBusy` auch bei einem Fehler zurückgesetzt wird.
+* `IsBusy` lässt sich z. B. an `ProgressBar IsIndeterminate="{Binding IsBusy}"` binden.
+
+=== Fehler abfangen
+
+[source,csharp]
+----
+try
+{
+    await LoadAsync();
+}
+catch (Exception ex)
+{
+    ErrorMessage = ex.Message;
+}
+----
+
+* Exceptions aus einem `await` landen ganz normal im `catch`.
+* In `async void`-Lambdas und Event-Handlern immer `try/catch` verwenden, sonst stürzt die App ab.
+
+=== Fortschritt melden
+
+[source,csharp]
+----
+var progress = new Progress<int>(p => Progress = p);
+await Task.Run(() => DoWork(progress));
+
+private void DoWork(IProgress<int> progress)
+{
+    for (int i = 0; i <= 100; i++)
+    {
+        // ... Arbeit ...
+        progress.Report(i);
+    }
+}
+----
+
+* `Progress<T>` führt den Callback automatisch im UI-Thread aus. Darum ist kein `Dispatcher` nötig.
+
+=== Abbrechen
+
+[source,csharp]
+----
+private CancellationTokenSource _cts;
+
+StartCommand  = new DelegateCommand(async () =>
+{
+    _cts = new CancellationTokenSource();
+    try { await RunAsync(_cts.Token); }
+    catch (OperationCanceledException) { Status = "Abgebrochen"; }
+});
+CancelCommand = new DelegateCommand(() => _cts?.Cancel());
+
+private async Task RunAsync(CancellationToken token)
+{
+    while (true)
+    {
+        await Task.Delay(200, token);   // wirft bei Abbruch
+        Step();
+    }
+}
+----
+
+* `Cancel()` setzt das Token. `Task.Delay(..., token)` und `token.ThrowIfCancellationRequested()` reagieren darauf.
+* Ein Abbruch kommt als `OperationCanceledException` an und wird extra abgefangen.
+
+=== Wiederholte Schritte mit Pause (Animation)
+
+[source,csharp]
+----
+foreach (var step in steps)
+{
+    Execute(step);
+    await Task.Delay(100);
+}
+----
+
+* Einfache Alternative zum `DispatcherTimer`, wenn Schritte nacheinander sichtbar werden sollen.
+
+=== Beim Start laden
+
+[source,xml]
+----
+<Window ... Loaded="Window_Loaded">
+----
+
+[source,csharp]
+----
+private async void Window_Loaded(object sender, RoutedEventArgs e)
+{
+    await ((MainWindowViewModel)DataContext).LoadAsync();
+}
+----
+
+* Ein Konstruktor kann nicht `await`en. Daher im `Loaded`-Event laden oder einen Command beim Start auslösen.
+
+=== UI aus einem fremden Thread aktualisieren
+
+[source,csharp]
+----
+Application.Current.Dispatcher.Invoke(() => Status = "Fertig");
+await Application.Current.Dispatcher.InvokeAsync(() => Items.Add(item));
+----
+
+* Nur nötig, wenn Code ohne `await` in einem anderen Thread läuft (z. B. `System.Timers.Timer`, Callbacks von Bibliotheken).
+
+=== Häufige Async-Fehler
+
+* `.Result` oder `.Wait()` auf einen Task im UI-Thread → Deadlock, das Fenster hängt. Immer `await` verwenden.
+* `ConfigureAwait(false)` in ViewModel-Code → danach läuft der Code nicht mehr im UI-Thread, und UI-Updates stürzen ab.
+* `async void` außerhalb von Event-Handlern → Exceptions können nicht abgefangen werden.
+* Collection in `Task.Run` ändern → `NotSupportedException` („von einem anderen Thread als dem Dispatcher-Thread“).
 
 == Nützliches C#
 
