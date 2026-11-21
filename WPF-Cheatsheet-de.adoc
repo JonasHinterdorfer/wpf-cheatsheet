@@ -25,6 +25,7 @@ MyApp/
 * *ViewModel*: stellt Daten als Properties bereit und Aktionen als `ICommand`. Meldet Änderungen über `INotifyPropertyChanged`.
 * *View*: nur XAML, mit dem ViewModel über `{Binding}` verbunden.
 * Typische Gliederung im ViewModel: `#region Properties` → `#region Operations` → `#region Commands`.
+* Mit Schul-Vorlage (`Base.WpfMvvm`): `DelegateCommand` in diesem Sheet = `RelayCommand` (ohne Parameter) bzw. `RelayCommandParam` (mit Parameter) dort.
 
 === csproj
 
@@ -60,6 +61,133 @@ MyApp/
 * `xmlns:vm="clr-namespace:..."` macht einen C#-Namespace in XAML verfügbar.
 * Der `DataContext` wird an alle Kind-Elemente vererbt, daher sucht `{Binding X}` die Property `X` im ViewModel.
 * Das ViewModel braucht einen öffentlichen parameterlosen Konstruktor.
+
+== Vorlage mit mehreren Projekten (Base.WpfMvvm / Logic / UnitTest)
+
+=== Aufbau der Solution
+
+----
+MyTest.sln
+├── Base.WpfMvvm/   ← Library: NotifyPropertyChanged, RelayCommand(Param), BaseViewModel, Validierung, Navigator
+├── Logic/          ← Library: DTOs + Manager (Datei laden/speichern) + Helpers (Extension-Methoden)
+├── WPFApp/         ← WinExe: Models/ (UI-Models), ViewModels/, Views/, Datendatei
+└── UnitTest/       ← xUnit + FluentAssertions, referenziert WPFApp → testet das ViewModel
+----
+
+* *Zuerst die vorgegebenen Tests lesen.* Sie legen die Namen fest (`FileName`, `Match.TeamName1`, `LoadCommand`, `Load()` ...).
+  Was der Test aufruft, muss `public` sein und genau so heißen.
+* Das ViewModel braucht einen parameterlosen Konstruktor, weil der Test `new MainViewModel()` aufruft.
+* Leere Methoden/`throw new NotImplementedException()` in Helpers sind die Stellen, die man selbst implementiert.
+* Tests laufen lassen: `dotnet test` im Solution-Ordner oder Test-Explorer.
+
+=== Projektreferenzen und Datendatei (csproj)
+
+[source,xml]
+----
+<!-- WPFApp.csproj -->
+<ItemGroup>
+  <ProjectReference Include="..\Base.WpfMvvm\Base.WpfMvvm.csproj" />
+  <ProjectReference Include="..\Logic\Logic.csproj" />
+</ItemGroup>
+<ItemGroup>
+  <Content Include="Daten.txt">
+    <CopyToOutputDirectory>Always</CopyToOutputDirectory>   <!-- oder PreserveNewest -->
+  </Content>
+</ItemGroup>
+----
+
+[source,csharp]
+----
+FileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Daten.txt");   // = bin\Debug\net10.0-windows\
+----
+
+* Ohne `CopyToOutputDirectory` liegt die Datei nicht neben der `.exe` → `FileNotFoundException`.
+* Eine Library mit WPF-Typen (`ICommand`, `Window`) braucht ebenfalls `net10.0-windows` + `<UseWPF>true</UseWPF>`.
+* Referenz hinzufügen: Rechtsklick Projekt → Hinzufügen → Projektverweis, oder `dotnet add WPFApp reference Logic`.
+
+=== Was die Base-Bibliothek bietet
+
+[cols="2,3"]
+|===
+| `NotifyPropertyChanged` | `SetProperty(ref _x, value)`, `OnPropertyChanged()`, `OnPropertyChanged(nameof(X))` bzw. `OnPropertyChanged(() => X)`
+| `RelayCommand` | `new RelayCommand(Load, CanLoad)` – Methoden *ohne* Parameter (`void Load()`, `bool CanLoad()`)
+| `RelayCommandParam` | `new RelayCommandParam(p => Play(p), p => CanPlay(p))` – mit `CommandParameter` (`object?`)
+| `BaseViewModel` | erbt von `NotifyPropertyChanged`, abstrakt: `public override Task InitializeDataAsync()` muss implementiert werden
+| `ValidatableBaseViewModel` | `INotifyDataErrorInfo` über DataAnnotations: `HasErrors`, `IsValid`, `AddError(...)` (siehe „Validierung mit DataAnnotations“)
+| `BaseWindowNavigator` | `ShowMessageBox(text)`, `AskYesNoMessageBox(caption, text)`, `CloseWindow()` (setzt `DialogResult = true`)
+|===
+
+* Die Base-Klassen nicht neu schreiben, sondern erben/verwenden: `public class Match : NotifyPropertyChanged`.
+* `RelayCommand` verwendet `CommandManager.RequerySuggested`: `CanExecute` wird nach jeder Eingabe automatisch neu geprüft.
+* Methodengruppe statt Lambda geht direkt: `new RelayCommand(Save, CanSave)` (Signaturen `void Save()` / `bool CanSave()`).
+
+=== DTO (Logic) vs. UI-Model (WPFApp)
+
+[source,csharp]
+----
+// Logic/DTO: reine Daten, kein PropertyChanged, Werte wie in der Datei
+public class Event { public int EventHalf { get; set; } public int EventTime { get; set; } public string Text { get; set; } }
+
+// WPFApp/Models: das, was das UI anzeigt/bindet (formatiert, bindbar)
+public class Match : NotifyPropertyChanged
+{
+    private string? _teamName1;
+    public string? TeamName1 { get => _teamName1; set => SetProperty(ref _teamName1, value); }
+
+    public ObservableCollection<MatchEvent> Events { get; } = new();
+}
+----
+
+* Model-Properties, an die eine `TextBox` bindet oder die `CanExecute` beeinflussen, brauchen `SetProperty`.
+* Zeilen-Objekte in einer nur lesbaren Liste (`MatchEvent`) dürfen einfache Auto-Properties sein.
+* Im XAML verschachtelt binden: `Text="{Binding Match.TeamName1, UpdateSourceTrigger=PropertyChanged}"`.
+* Model-Objekt im ViewModel als `public Match Match { get; } = new();` – nie ersetzen, nur Inhalt ändern.
+
+=== Laden und Speichern im ViewModel (Mapping)
+
+[source,csharp]
+----
+private readonly MatchManager _manager = new();
+
+public bool CanLoad() => !string.IsNullOrWhiteSpace(FileName) && File.Exists(FileName);
+
+public void Load()
+{
+    var dto = _manager.Load(FileName!);
+    Match.TeamName1 = dto.Team1.Name;
+
+    Match.Events.Clear();                              // sonst doppelte Einträge beim 2. Laden
+    foreach (var e in dto.Events)
+        Match.Events.Add(new MatchEvent
+        {
+            EventTime = (e.EventHalf, e.EventTime).ToEventTime(),   // DTO → Anzeigeformat
+            EventText = e.Text,
+        });
+}
+
+public void Save()
+{
+    Match.Events.Add(new MatchEvent { EventTime = Match.NewEventTime!, EventText = Match.NewEventText! });
+
+    var dto = new Logic.DTO.Match
+    {
+        Team1  = new Team { Name = Match.TeamName1! },
+        Events = Match.Events.Select(e =>
+        {
+            var (half, time) = e.EventTime.ToHalfAndTime();         // Anzeigeformat → DTO
+            return new Event { EventHalf = half, EventTime = time, Text = e.EventText };
+        }).ToArray(),
+    };
+    _manager.Save(dto, FileName!);
+
+    Match.NewEventTime = null;                         // Eingabefelder leeren (Test prüft das oft)
+    Match.NewEventText = null;
+}
+----
+
+* Namenskonflikt `Match` (DTO) vs. `Match` (Model): voll qualifizieren (`Logic.DTO.Match`, `Models.Match`) oder `using Dto = Logic.DTO;`.
+* `Load()`/`Save()` `public` machen, damit der Test sie direkt aufrufen kann. Der Command ruft dieselbe Methode auf.
+* `CanSave` prüft *alle* Pflichtfelder: `!string.IsNullOrWhiteSpace(...) && ... && Time.IsValidEventTime()`.
 
 == Properties und Benachrichtigung
 
@@ -201,6 +329,43 @@ public MainWindowViewModel()
 
 * `CommandParameter` übergibt einen Wert an `Execute(object parameter)`. Aus XAML kommt ein `string`.
 * So bedient ein einziger Command viele gleichartige Buttons.
+
+=== Spielfeld: viele Buttons, ein Command, Index-Binding
+
+[source,xml]
+----
+<Window.Resources>
+    <Style x:Key="CellStyle" TargetType="Button">
+        <Setter Property="Margin" Value="2"/>
+        <Setter Property="Command" Value="{Binding PlayCommand}"/>   <!-- Command im Style -->
+    </Style>
+</Window.Resources>
+
+<UniformGrid Rows="3" Columns="3">
+    <Button Style="{StaticResource CellStyle}" Content="{Binding Cells[0]}" CommandParameter="0"/>
+    <Button Style="{StaticResource CellStyle}" Content="{Binding Cells[1]}" CommandParameter="1"/>
+    <!-- ... bis Cells[8] -->
+</UniformGrid>
+----
+
+[source,csharp]
+----
+public ObservableCollection<string> Cells { get; } = new(Enumerable.Repeat(string.Empty, 9));
+
+PlayCommand = new RelayCommandParam(Play, CanPlay);
+
+private bool CanPlay(object? p) => int.TryParse(p?.ToString(), out var i) && Cells[i] == "" && !IsGameOver;
+private void Play(object? p)    { var i = int.Parse(p!.ToString()!); Cells[i] = Next; /* ... */ }
+
+private static readonly int[][] Lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+private bool HasWon(string p) => Lines.Any(l => l.All(i => Cells[i] == p));
+----
+
+* `{Binding Cells[0]}` bindet an ein Element per Index. `Cells[i] = "X"` (Ersetzen) aktualisiert die Anzeige,
+  weil `ObservableCollection` dabei `"Item[]"` meldet. Bei einem Array `string[]` passiert *nichts*.
+* `CommandParameter="0"` kommt als `string` → `int.Parse`/`TryParse`.
+* `CanPlay` = `false` deaktiviert belegte Felder und das ganze Feld nach Spielende automatisch.
+* Alternativ dynamisch: `ItemsControl` mit `UniformGrid` als `ItemsPanel` und `CommandParameter="{Binding}"` (siehe „Listen und Templates“).
 
 === CanExecute manuell neu prüfen
 
@@ -476,6 +641,41 @@ public class EditViewModel : BaseViewModel, INotifyDataErrorInfo
 * Der Fehler erscheint erst nach der ersten Eingabe. Für eine Prüfung von Anfang an `SetError(...)` auch im Konstruktor aufrufen.
 * Den Speichern-Command mit `() => !HasErrors` sperren.
 
+=== Validierung mit DataAnnotations (ValidatableBaseViewModel)
+
+[source,csharp]
+----
+using System.ComponentModel.DataAnnotations;
+
+public class EditViewModel : ValidatableBaseViewModel
+{
+    private string? _name;
+    [Required(ErrorMessage = "Name fehlt")]
+    [StringLength(50, MinimumLength = 2)]
+    public string? Name { get => _name; set => SetProperty(ref _name, value); }
+
+    private string? _time;
+    [RegularExpression(@"^\d+'(\+\d+)?$", ErrorMessage = "Format: 45' oder 45'+2")]
+    public string? Time { get => _time; set => SetProperty(ref _time, value); }
+
+    [Range(0, 120)] public int Minute { get => _minute; set => SetProperty(ref _minute, value); }
+    private int _minute;
+
+    public EditViewModel()
+    {
+        SaveCommand = new RelayCommand(Save, () => IsValid);
+        ValidateViewModelProperties();             // sonst ist IsValid bis zur 1. Eingabe false/ungeprüft
+    }
+
+    public override Task InitializeDataAsync() => Task.CompletedTask;
+}
+----
+
+* Jedes `OnPropertyChanged` prüft *alle* Attribute des ViewModels neu und setzt `HasErrors`/`IsValid`.
+* Geprüft werden nur Properties *dieses* ViewModels, nicht die eines verschachtelten Models (`Match.TeamName1`).
+* Eigene Regel zusätzlich: nach `ValidateViewModelProperties()` mit `AddError(nameof(Time), "ungültige Zeit")` ergänzen.
+* Fehleranzeige im XAML wie oben (`Validation.Errors`). Roter Rahmen kommt automatisch.
+
 === Auswahl / Master-Detail
 
 [source,xml]
@@ -612,6 +812,39 @@ UpdateCommand = new DelegateCommand(async () =>
 ----
 
 * Tabellenartige Liste mit Überschriften. Jede Spalte bindet an eine Property.
+
+=== DataGrid
+
+[source,xml]
+----
+<DataGrid Grid.Row="2" ItemsSource="{Binding Match.Events}" SelectedItem="{Binding SelectedEvent}"
+          AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+          HeadersVisibility="Column" SelectionMode="Single" VerticalScrollBarVisibility="Visible">
+    <DataGrid.Columns>
+        <DataGridTextColumn Header="Time"        Width="80"   Binding="{Binding EventTime}"/>
+        <DataGridTextColumn Header="Event"       Width="Auto" Binding="{Binding EventText}"/>
+        <DataGridTextColumn Header="Information" Width="*"    Binding="{Binding EventInformation}"/>
+        <DataGridTextColumn Header="Preis"       Binding="{Binding Price, StringFormat=N2}"/>
+        <DataGridCheckBoxColumn Header="Aktiv"   Binding="{Binding IsActive}"/>
+        <DataGridTemplateColumn Header="">
+            <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                    <Button Content="X" Command="{Binding DataContext.DeleteCommand,
+                            RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
+                </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+        </DataGridTemplateColumn>
+    </DataGrid.Columns>
+</DataGrid>
+----
+
+* `AutoGenerateColumns="False"`, sonst erscheinen alle Properties zusätzlich als Spalten.
+* `IsReadOnly="True"` + `CanUserAddRows="False"`: keine Bearbeitung und keine leere „neue Zeile“ am Ende.
+* `Width`: Zahl, `Auto` oder `*` (letzte Spalte füllt den Rest).
+* `DataGridTextColumn.Binding` ist standardmäßig *TwoWay*. Bei Properties ohne Setter → Exception, außer `IsReadOnly="True"` oder `Mode=OneWay`.
+* Damit das DataGrid scrollt, in eine Grid-Zeile mit `Height="*"` legen (nicht in ein `StackPanel`).
+* Text rechtsbündig: `<DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>`.
+* Neue Zeilen erscheinen automatisch, wenn `ItemsSource` eine `ObservableCollection` ist. Zum Mitscrollen: `dataGrid.ScrollIntoView(item)` (Code-Behind).
 
 == Zeichnen
 
@@ -1511,6 +1744,58 @@ private void OkButton_Click(object sender, RoutedEventArgs e) { ... }
 
 * Klassischer Weg ohne MVVM. `x:Name` macht das Control im Code-Behind als Feld verfügbar.
 
+=== Ein Handler für viele Buttons (Rechner ohne MVVM)
+
+[source,xml]
+----
+<TextBlock x:Name="Display" Text="0"/>
+<Button Content="7" Click="Digit_Click"/>
+<Button Content="+" Click="Operator_Click"/>
+----
+
+[source,csharp]
+----
+private double _left;
+private Func<double, double, double>? _op;
+private bool _newNumber = true;
+
+private void Digit_Click(object sender, RoutedEventArgs e)
+{
+    string digit = (string)((Button)sender).Content;      // welcher Button?
+    Display.Text = _newNumber || Display.Text == "0" ? digit : Display.Text + digit;
+    _newNumber = false;
+}
+
+private void Operator_Click(object sender, RoutedEventArgs e)
+{
+    if (_op != null && !_newNumber) Calculate();          // Kettenrechnung 1+2+3
+    _left = double.Parse(Display.Text);
+    _op = (string)((Button)sender).Content switch
+    {
+        "+" => (a, b) => a + b,
+        "-" => (a, b) => a - b,
+        "*" => (a, b) => a * b,
+        "/" => (a, b) => a / b,
+        _   => null
+    };
+    _newNumber = true;
+}
+
+private void Calculate()
+{
+    if (_op == null) return;
+    double r = _op(_left, double.Parse(Display.Text));
+    Display.Text = double.IsFinite(r) ? r.ToString() : "Error";   // Division durch 0 → ∞
+    _op = null; _newNumber = true;
+}
+----
+
+* `sender` ist der geklickte Button. `Content` (oder `Tag="..."`) unterscheidet die Buttons.
+* `Func<double, double, double>` speichert die Operation bis `=`. Switch-Ausdruck liefert das passende Lambda.
+* `double` wirft bei `/ 0` keine Exception, sondern liefert `Infinity`/`NaN` → mit `double.IsFinite` prüfen.
+* Fenster an den Inhalt anpassen: `<Window SizeToContent="WidthAndHeight" ResizeMode="CanMinimize">`
+  (`NoResize`, `CanResize`). Mindestgröße: `MinWidth`/`MinHeight`.
+
 == Async / Await
 
 === Grundregel
@@ -1846,6 +2131,91 @@ DateTime date = DateTime.TryParseExact(last, "yyyyMMdd", CultureInfo.InvariantCu
 string text = string.Join(",", item.Tags.Select(t => t.Name));   // "C1,C3"
 ----
 
+=== CSV-/Textdatei lesen und schreiben
+
+[source,csharp]
+----
+// Datei:  TeamA;TeamB          ← Kopfzeile
+//         0;17;Tor;0:1 durch …  ← Datenzeilen
+var lines  = File.ReadAllLines(fileName);
+var header = lines.First().Split(';');
+var events = lines.Skip(1)
+                  .Where(l => !string.IsNullOrWhiteSpace(l))     // leere Zeilen am Ende ignorieren
+                  .Select(l => l.Split(';'))
+                  .Select(c => new Event { EventHalf = int.Parse(c[0]), EventTime = int.Parse(c[1]), Text = c[2] })
+                  .ToList();
+
+var output = new List<string> { $"{match.Team1.Name};{match.Team2.Name}" };
+output.AddRange(match.Events.Select(e => $"{e.EventHalf};{e.EventTime};{e.Text}"));
+File.WriteAllLines(fileName, output);                       // überschreibt die Datei komplett
+----
+
+* `Split(';', 4)` begrenzt auf 4 Teile, falls der letzte Text selbst `;` enthalten kann.
+* `File.AppendAllLines(file, new[] { line })` hängt nur an, statt alles neu zu schreiben.
+* Reihenfolge nach dem Laden sortieren: `.OrderBy(e => e.EventHalf).ThenBy(e => e.EventTime)`.
+
+=== Extension-Methoden und Tupel
+
+[source,csharp]
+----
+public static class EventTimeExtensions          // static class, static Methode, "this" vor dem 1. Parameter
+{
+    public static string ToEventTime(this (int half, int time) t)
+    {
+        var (half, minute) = t;                  // Tupel zerlegen (Deconstruction)
+        return $"{half * 45 + minute}'";
+    }
+
+    public static bool IsValidEventTime(this string? s) => TryToHalfAndTime(s, out _);
+}
+
+string s = (1, 3).ToEventTime();                 // Aufruf wie eine Instanzmethode
+var (h, m) = "48'".ToHalfAndTime();              // Rückgabe (int half, int time)
+var t = "48'".ToHalfAndTime(); int x = t.half;   // Zugriff über die Namen
+----
+
+* Die Methode erscheint auf dem Typ nach `this`, sobald der Namespace (`using Logic.Helpers;`) eingebunden ist.
+* Eine Extension auf `string?` darf auch mit `null` aufgerufen werden, darum im Rumpf auf `null` prüfen.
+* Lookup-Tabellen statt vieler `if`: `int[] Start = { 0, 45, 90, 105 }; int[] Length = { 45, 45, 15, 15 };`
+
+=== Try-Muster (TryParse selbst schreiben)
+
+[source,csharp]
+----
+public static bool TryToHalfAndTime(this string? s, out (int half, int time) result)
+{
+    result = default;                            // out muss in jedem Pfad gesetzt werden
+    if (string.IsNullOrWhiteSpace(s)) return false;
+    ...
+    result = (half, minute);
+    return true;
+}
+
+public static (int half, int time) ToHalfAndTime(this string s)
+    => s.TryToHalfAndTime(out var r) ? r : throw new FormatException($"Ungültig: '{s}'");
+----
+
+* Einmal die Logik in `Try...` schreiben, die werfende Variante und `IsValid...` rufen sie nur auf.
+* Ausnahmen für ungültige Argumente: `ArgumentOutOfRangeException(nameof(x))`, `FormatException`, `ArgumentNullException`.
+
+=== Regex
+
+[source,csharp]
+----
+private static readonly Regex TimeRegex = new(@"^\s*(\d+)\s*'\s*(?:\+\s*(\d+))?\s*$");
+
+var m = TimeRegex.Match(input);                  // "45'+2"
+if (!m.Success) return false;
+int minute = int.Parse(m.Groups[1].Value);       // 45
+int extra  = m.Groups[2].Success ? int.Parse(m.Groups[2].Value) : 0;   // 2
+
+bool ok = Regex.IsMatch(input, @"^[A-Z]{2}\d{3}$");
+----
+
+* `^ $` Anfang/Ende (sonst passt auch ein Teilstring), `\d` Ziffer, `+` 1-n, `*` 0-n, `?` optional, `\s` Leerzeichen.
+* `( )` Gruppe zum Auslesen, `(?: )` nur gruppieren. Gruppe 0 = ganzer Treffer.
+* `@"..."` (verbatim string), damit `\d` nicht als Escape interpretiert wird.
+
 == Datenbank (EF Core)
 
 === Gefiltert und sortiert in der Datenbank abfragen
@@ -2014,6 +2384,45 @@ public class MainWindowViewModelTests
 * Wichtige Asserts: `Assert.Equal(erwartet, ist)`, `True/False`, `Null/NotNull`, `Empty`, `Single`, `Contains`, `Throws<T>`.
 * MSTest statt xUnit: `[TestClass]`/`[TestMethod]`/`[DataRow]` und `Assert.AreEqual(erwartet, ist)`.
 
+=== FluentAssertions
+
+[source,csharp]
+----
+using FluentAssertions;
+
+vm.Match.TeamName1.Should().Be("Test");
+vm.LoadCommand.CanExecute(null).Should().BeTrue();          // .BeFalse()
+vm.Match.Events.Should().HaveCount(2);                      // .BeEmpty() / .ContainSingle()
+vm.Match.NewEventText.Should().BeNullOrEmpty();             // .BeNull() / .NotBeNull()
+vm.Match.Events.First().EventTime.Should().Be("46'");
+list.Should().Contain(x => x.Text == "Tor");
+list.Should().BeEquivalentTo(new[] { "A", "B" });           // gleicher Inhalt, Reihenfolge egal
+value.Should().BeGreaterThan(0).And.BeLessThan(10);
+
+Action act = () => "abc".ToHalfAndTime();
+act.Should().Throw<FormatException>();
+----
+
+* Liest sich als `ist.Should().Be(erwartet)`. Bei Fehlern zeigt die Meldung beide Werte.
+* `[Theory]` + `[InlineData(null)]` für ungültige Eingaben: Parameter als `string?` deklarieren.
+
+=== Tests mit Dateien
+
+[source,csharp]
+----
+string file = Path.GetTempFileName();        // leere Temp-Datei, eindeutiger Name
+new MatchManager().Save(match, file);        // Testdaten über die Logic-Klasse schreiben
+
+var vm = new MatchViewModel { FileName = file };
+vm.Load();
+vm.Load();                                   // zweimal laden → darf nicht verdoppeln (Events.Clear!)
+
+File.Delete(file);                           // aufräumen
+----
+
+* Ein Test wie `CanLoad_FileMissing_IsFalse` löscht die Datei vorher: `File.Delete(file)` → `CanExecute` muss `false` liefern.
+* Das ViewModel darf im Konstruktor keine Datei laden oder MessageBoxen öffnen, sonst scheitert/hängt der Test.
+
 === PropertyChanged prüfen
 
 [source,csharp]
@@ -2159,3 +2568,8 @@ public void CloseCommand_ClosesWithFalse()
 * Command im Template feuert nicht → `RelativeSource AncestorType=Window` verwenden.
 * Trigger wirkt nicht → Property wurde lokal am Element gesetzt. Standardwert in den Style verschieben.
 * Fenster wird beim Start nicht gefunden → `StartupUri`, `x:Class` und Namespace stimmen nicht überein.
+* Datendatei nicht gefunden → `CopyToOutputDirectory` fehlt oder Pfad nicht über `AppDomain.CurrentDomain.BaseDirectory` gebaut.
+* Test kompiliert nicht → Property/Methode heißt anders oder ist nicht `public`. Namen aus dem Test übernehmen.
+* Liste nach zweitem Laden doppelt → `Collection.Clear()` vor dem Befüllen vergessen.
+* `DataGrid` zeigt doppelte Spalten → `AutoGenerateColumns="False"` fehlt.
+* Index-Binding `Cells[0]` aktualisiert nicht → Array statt `ObservableCollection` verwendet.
