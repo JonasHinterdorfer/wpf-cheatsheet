@@ -189,6 +189,287 @@ public void Save()
 * `Load()`/`Save()` `public` machen, damit der Test sie direkt aufrufen kann. Der Command ruft dieselbe Methode auf.
 * `CanSave` prüft *alle* Pflichtfelder: `!string.IsNullOrWhiteSpace(...) && ... && Time.IsValidEventTime()`.
 
+== Vorlage mit Datenbank (Core / Persistence / Wpf.ViewModels – Turtle)
+
+=== Aufbau der Solution
+
+----
+Turtle.sln
+├── Base/            ← Lehrer: AppService (DI), GenericRepository, BaseUnitOfWork, Transaction, CsvImport
+├── Base.WpfMvvm/    ← Lehrer: NotifyPropertyChanged, RelayCommand, ValidatableBaseViewModel, BaseWindowNavigator
+├── Core/            ← Entities, Contracts (IUnitOfWork, I...Repository), DTOs, reine Logik (z. B. TurtleParser)
+├── Persistence/     ← ApplicationDbContext, UnitOfWork, ...Repository, ImportService
+├── ImportConsoleApp/← Konsolen-Import (Task 2)
+├── Wpf.ViewModels/  ← ViewModels + IWindowNavigator (eigenes Projekt, kennt keine Fenster)
+└── Wpf/             ← App.xaml(.cs), Views/, Controls/, WindowNavigator
+----
+
+* Reihenfolge beim Arbeiten: Entities/Contracts lesen → Repository-Methode (Abfrage) → ImportService → ViewModel → View.
+* ViewModels liegen in einem eigenen Projekt. Im XAML deshalb mit Assembly-Angabe einbinden:
+  `xmlns:viewModels="clr-namespace:Wpf.ViewModels;assembly=Wpf.ViewModels"`.
+* `d:DataContext="{d:DesignInstance Type=viewModels:MainWindowViewModel}"` nur für IntelliSense im Designer. Der echte DataContext kommt aus dem Code.
+
+=== Start mit DI (App.xaml / App.xaml.cs)
+
+[source,xml]
+----
+<Application x:Class="Wpf.App" ... Startup="Application_Startup">   <!-- statt StartupUri -->
+----
+
+[source,csharp]
+----
+private void Application_Startup(object sender, StartupEventArgs e)
+{
+    var configuration    = ConfigurationHelper.GetConfiguration();
+    var connectionString = configuration.GetConnectionString("DefaultConnection")!;
+
+    AppService.ServiceCollection = new ServiceCollection();
+    AppService.ServiceCollection
+        .AddSingleton(configuration)
+        .AddAssemblyByName(n => n.EndsWith("ViewModel"), ServiceLifetime.Transient,
+                           typeof(ViewModels.MainWindowViewModel).Assembly)     // alle ...ViewModel
+        .AddDbContext<ApplicationDbContext>(o => o.UseSqlServer(connectionString))
+        .AddScoped<IUnitOfWork, UnitOfWork>()
+        .AddTransient<IScriptRepository, ScriptRepository>()      // ... jedes Repository
+        .AddTransient<IImportService, ImportService>()
+        .AddTransient<MainWindow>()                               // ... jedes Fenster
+        .AddTransient<ScriptPreviewWindow>();
+    AppService.BuildServiceProvider();
+
+    MainWindow = AppService.GetRequiredService<MainWindow>();
+    MainWindow.Show();
+}
+----
+
+* Neues Fenster, neues Repository, neuer Service → hier registrieren, sonst Exception bei `GetRequiredService`.
+* `AddAssemblyByName` registriert automatisch alle Klassen, deren Name auf `ViewModel` endet.
+
+=== Fenster: ViewModel aus DI, Navigator setzen, beim Laden initialisieren
+
+[source,csharp]
+----
+public partial class MainWindow : Window
+{
+    public MainWindow(MainWindowViewModel viewModel)            // DI liefert das ViewModel
+    {
+        InitializeComponent();
+        viewModel.Controller = new WindowNavigator(this);       // ViewModel kann Fenster öffnen/schließen
+        DataContext          = viewModel;
+        Loaded += async (_, _) => await viewModel.InitializeDataAsync();   // Daten laden
+    }
+}
+----
+
+[source,csharp]
+----
+public class MainWindowViewModel : ValidatableBaseViewModel     // oder BaseViewModel
+{
+    public IWindowNavigator? Controller { get; set; }
+    private readonly IUnitOfWork _uow;
+
+    public MainWindowViewModel(IUnitOfWork uow) => _uow = uow;
+
+    public override async Task InitializeDataAsync()            // Pflicht (abstract in BaseViewModel)
+    {
+        await LoadOriginsAsync();
+        await LoadScriptsAsync();
+    }
+}
+----
+
+* Das ist der einzige erlaubte Code-Behind: Konstruktor mit diesen drei Zeilen. Keine Logik im Fenster.
+* `InitializeDataAsync` ersetzt „beim Programmstart laden“. Dialog-ViewModels ohne Daten: `=> Task.CompletedTask;`.
+
+=== WindowNavigator der Vorlage (Dialoge öffnen, Parameter übergeben)
+
+[source,csharp]
+----
+// Wpf.ViewModels/IWindowNavigator.cs
+public interface IWindowNavigator : IBaseWindowNavigator      // erbt CloseWindow, ShowMessageBox, AskYesNoMessageBox
+{
+    void ShowScriptPreview(int scriptId);
+    bool ShowImportScript();
+}
+
+// Wpf/WindowNavigator.cs
+public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
+{
+    public WindowNavigator(Window window) : base(window) { }
+
+    public void ShowScriptPreview(int scriptId)
+    {
+        using var scope  = AppService.ServiceProvider!.CreateScope();          // eigener DbContext für den Dialog
+        var       window = scope.ServiceProvider.GetRequiredService<ScriptPreviewWindow>();
+        ((ScriptPreviewViewModel)window.DataContext).ScriptId = scriptId;     // Parameter VOR ShowDialog setzen
+        window.Owner = Window;
+        window.ShowDialog();
+    }
+
+    public bool ShowImportScript()
+    {
+        using var scope  = AppService.ServiceProvider!.CreateScope();
+        var       window = scope.ServiceProvider.GetRequiredService<ImportScriptWindow>();
+        window.Owner = Window;
+        return window.ShowDialog() == true;                                    // true = importiert → neu laden
+    }
+}
+----
+
+[source,csharp]
+----
+// im ViewModel
+DetailsCommand = new RelayCommand(() => Controller?.ShowScriptPreview(SelectedScript!.Id),
+                                  () => SelectedScript != null);
+ImportCommand  = new RelayCommand(async () =>
+{
+    if (Controller?.ShowImportScript() == true) await LoadScriptsAsync();
+});
+CloseCommand   = new RelayCommand(() => Controller?.CloseWindow());           // im Dialog
+Controller?.ShowMessageBox($"Fehler: {ex.GetBaseException().Message}");
+----
+
+* Pro Dialog: eine Methode im Interface (in `Wpf.ViewModels`) + Umsetzung im `WindowNavigator` (in `Wpf`).
+* `CloseWindow()` setzt `DialogResult = true` → `ShowDialog()` liefert `true`. Das „X“ oben rechts liefert `false`.
+* Der Parameter (`ScriptId`) ist eine normale Property. `InitializeDataAsync` läuft erst bei `Loaded`, also nach dem Setzen.
+
+=== UnitOfWork und GenericRepository der Vorlage
+
+[cols="2,3"]
+|===
+| `await _uow.XRepository.GetNoTrackingAsync(filter, orderBy, includes)` | Liste nur lesen: `GetNoTrackingAsync(o => o.Active, q => q.OrderBy(o => o.Name))`
+| `await _uow.XRepository.GetAsync(...)` | wie oben, aber getrackt (zum Ändern)
+| `await _uow.XRepository.GetByIdAsync(id)` | ein Objekt zum Ändern laden
+| `await _uow.XRepository.GetNoTrackingByIdAsync(id, nameof(Script.Moves))` | ein Objekt lesen, mit Include als String
+| `CountAsync(filter)` / `ExistsAsync(id)` | Anzahl / existiert?
+| `await AddAsync(entity)` / `Remove(entity)` | neu / löschen (gespeichert erst mit SaveChanges)
+| `await _uow.SaveChangesAsync()` | Änderungen in die DB schreiben
+| `using var trans = _uow.BeginTransaction(); ... await trans.CommitTransactionAsync();` | Transaktion. Commit ruft selbst `SaveChanges` auf, ohne Commit → Rollback beim Dispose
+|===
+
+[source,csharp]
+----
+// Ändern (Edit/Update): getrackt laden, Wert setzen, speichern
+var script = await _uow.ScriptRepository.GetByIdAsync(SelectedScript.Id);
+script!.OriginId = SelectedEditOrigin is { Id: > 0 } o ? o.Id : null;   // Platzhalter "<None>" (Id 0) → null
+await _uow.SaveChangesAsync();
+----
+
+* Eigene Abfragen (Filter + DTO, `Count`, `string.Join`) als Methode im Repository: `IQueryable<Script> query = DbSet.AsNoTracking();`
+  dann weiter wie in „Gefiltert und sortiert in der Datenbank abfragen“.
+* Methode im Interface (`Core/Contracts/IScriptRepository.cs`) *und* in der Klasse (`Persistence/ScriptRepository.cs`) ergänzen.
+
+=== Import mit Transaktion über die UnitOfWork
+
+[source,csharp]
+----
+public async Task ImportScriptAsync(string name, string? description, string? origin, DateOnly date, string fileName)
+{
+    var moves = TurtleParser.Parse(await File.ReadAllTextAsync(fileName));
+
+    using var trans = _uow.BeginTransaction();                    // eine Transaktion pro Script
+
+    var script = new Script
+    {
+        Name         = name,
+        Description  = description,
+        CreationDate = date,
+        Origin       = origin == null ? null : await GetOrCreateOriginAsync(origin),   // Navigation-Property
+        Moves = moves.Select((m, i) => new Move                    // Select mit Index → SeqNo
+        {
+            SeqNo = i + 1, Direction = (int)m.Direction, Repeat = m.Count, Color = m.Color
+        }).ToList(),
+    };
+    await _uow.ScriptRepository.AddAsync(script);   // Moves + Origin kommen mit
+
+    await trans.CommitTransactionAsync();
+}
+
+private async Task<Origin> GetOrCreateOriginAsync(string code)
+{
+    var existing = (await _uow.OriginRepository.GetAsync(o => o.Code == code)).FirstOrDefault();
+    if (existing != null) return existing;
+    var origin = new Origin { Code = code, Name = code };
+    await _uow.OriginRepository.AddAsync(origin);
+    return origin;
+}
+----
+
+=== Custom Draw: eigenes Control mit OnRender
+
+[source,csharp]
+----
+// Hinzufügen → Benutzersteuerelement (UserControl)
+public partial class ScriptPreviewControl : UserControl
+{
+    public static readonly DependencyProperty MovesProperty = DependencyProperty.Register(
+        nameof(Moves), typeof(IList<Move>), typeof(ScriptPreviewControl),
+        new FrameworkPropertyMetadata(new List<Move>(), FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public IList<Move> Moves              // bindbar
+    {
+        get => (IList<Move>)GetValue(MovesProperty);
+        set => SetValue(MovesProperty, value);
+    }
+
+    private static readonly Pen[] Pens = { new(Brushes.Red, 1), new(Brushes.Orange, 1), new(Brushes.Blue, 1) /* ... */ };
+
+    protected override void OnRender(DrawingContext dc)
+    {
+        base.OnRender(dc);
+        dc.DrawRectangle(Brushes.White, null, new Rect(0, 0, ActualWidth, ActualHeight));
+        // 1. Durchlauf: Bounding Box (minX/maxX/minY/maxY)
+        // 2. scale = Math.Min((ActualWidth-2*m)/sizeX,
+        //                     (ActualHeight-2*m)/sizeY)
+        // 3. Durchlauf, nur wenn Color != null:
+        //    dc.DrawLine(Pens[color % Pens.Length], von, nach)
+    }
+}
+----
+
+[source,xml]
+----
+<Window ... xmlns:controls="clr-namespace:Wpf.Controls">
+<Border Grid.Row="1" BorderBrush="Black" BorderThickness="1">
+    <controls:ScriptPreviewControl Moves="{Binding Moves}" />
+</Border>
+----
+
+* Ein normales C#-Property ist *nicht* bindbar. Für `Moves="{Binding ...}"` braucht ein Control eine `DependencyProperty`
+  (Muster oben: `static readonly ...Property` + Property mit `GetValue/SetValue`).
+* `AffectsRender`: bei neuem Wert wird `OnRender` automatisch neu aufgerufen. Bei Größenänderung des Fensters ebenfalls.
+* `ActualWidth/ActualHeight` = aktuelle Größe des Controls. Skalierung siehe „Zeichnung auf die Fläche skalieren“,
+  Richtungen siehe „Richtung als Index (8 Nachbarn)“, Farben siehe „Farbe aus einem Index“.
+* Wichtige Methoden: `DrawLine(pen, p1, p2)`, `DrawRectangle(brush, pen, rect)`, `DrawEllipse(brush, pen, center, rx, ry)`.
+  `Pen` = Linie (Farbe + Dicke), `Brush` = Füllung.
+
+=== Eigene Validierung (CustomValidation) und Fehleranzeige
+
+[source,csharp]
+----
+[Required(ErrorMessage = "Filename is required")]
+[CustomValidation(typeof(ImportScriptViewModel), nameof(ValidateFileName))]
+public string FileName { get => _fileName; set => SetProperty(ref _fileName, value); }
+
+public static ValidationResult? ValidateFileName(string? fileName, ValidationContext context)
+{
+    var vm = (ImportScriptViewModel)context.ObjectInstance;   // das ViewModel
+    return vm.FileExists
+        ? ValidationResult.Success
+        : new ValidationResult("File does not exist", new[] { nameof(FileName) });
+}
+
+ImportCommand = new RelayCommand(async () => await ImportAsync(), () => IsValid);
+public override Task InitializeDataAsync() { ValidateViewModelProperties(); return Task.CompletedTask; }
+----
+
+[source,xml]
+----
+<TextBox Text="{Binding FileName, UpdateSourceTrigger=PropertyChanged, ValidatesOnNotifyDataErrors=True}" />
+----
+
+* Methode muss `public static` sein und `ValidationResult?` zurückgeben.
+* Startwerte („sinnvolle Defaultwerte“) direkt am Feld: `private string _name = "Demo1";`
+
 == Properties und Benachrichtigung
 
 === PropertyChanged auslösen
