@@ -9,6 +9,35 @@
 
 Kurze, allgemein verwendbare Snippets für WPF mit MVVM.
 
+== Vorgehen in der Prüfung (Checkliste)
+
+*Muster:* Angabe + Tests lesen → Logik/Helper → (Import/DB) → Model → ViewModel (Can + Do pro Button) → XAML binden → testen.
+
+[cols="1,4"]
+|===
+| *0. Lesen* (10 min)
+| Angabe: Buttons, wann aktiv, was wird gespeichert/angezeigt? Tests öffnen und alle Namen notieren, die der Test aufruft
+  (Properties, Methoden, Commands, Konstruktor). `TODO`/`NotImplementedException` in der Vorlage suchen. Einmal bauen.
+| *1. Logik ohne UI*
+| Helper/Parser (Extension-Methoden, Regex, Split, Try-Muster). Sofort die Helper-Tests laufen lassen, bis grün.
+| *2. Import / DB* (nur DB-Vorlage)
+| `ImportService` (eine Transaktion, Navigation-Properties, ein `AddAsync`), Konsolen-Schleife über die Ordner,
+  Repository-Methode für die Übersicht (Filter + `Select` in DTO). Konsole laufen lassen.
+| *3. Model*
+| Pro Feld im Fenster eine Property mit `SetProperty`. Listen: `ObservableCollection<Zeile> { get; } = new();`. Zeilen-Klasse anlegen.
+| *4. ViewModel*
+| Konstruktor: Startwerte, Commands. Pro Button `bool CanXxx()` + `void Xxx()` + `ICommand XxxCommand`.
+  Laden in `InitializeDataAsync` (DB) bzw. `Load()` (Datei). Neue Dialoge: Methode in `IWindowNavigator` + `WindowNavigator`, Fenster in `App.xaml.cs` registrieren.
+| *5. XAML*
+| `DataContext` (bzw. aus DI). Bild in waagrechte Bereiche zerlegen → `Grid` mit Zeilen `Auto` (fest) und `+*+` (wächst mit).
+  Pro Bereich: nebeneinander → `StackPanel`, Label+Eingabe bündig → kleines `Grid`, Tabelle → `DataGrid`/`ListView`. Binden, Style für Abstände.
+| *6. Testen*
+| Alle Tests grün. App durchklicken: falsche Eingabe (Button grau?), richtige Eingabe, Fenster größer ziehen, zweimal laden (keine Doppelten).
+|===
+
+* Häufige Punkteverluste: Code im Code-Behind, ganze Tabelle laden statt in der DB filtern, Button nicht korrekt aktiv/inaktiv,
+  Liste nach erneutem Laden doppelt, Eingabefelder nach dem Hinzufügen nicht geleert.
+
 == Projektstruktur
 
 ----
@@ -1421,6 +1450,45 @@ Point ToCanvas(Point p) => new((p.X - minX) * scale + Margin,
   (`DrawWidth = maxX - minX`). Verschieben (`- minX`, `- minY`) muss man trotzdem selbst.
 * Die Linienstärke wird mitskaliert. Für dünne Linien eher die Rechnung oben verwenden.
 
+=== Liniendiagramm mit OnRender (y umgedreht, Lücken bei null)
+
+[source,csharp]
+----
+protected override void OnRender(DrawingContext dc)        // in einem UserControl mit DependencyProperty Values
+{
+    base.OnRender(dc);
+    dc.DrawRectangle(Brushes.White, null, new Rect(0, 0, ActualWidth, ActualHeight));
+
+    var values  = Values;                                   // IList<double?>, null = Ausfall
+    var present = values.Where(v => v != null).Select(v => v!.Value).ToList();
+    if (present.Count == 0 || ActualWidth <= 20 || ActualHeight <= 20) return;
+
+    const double m = 10;                                    // Rand
+    double min = present.Min(), max = present.Max();
+    double rangeY = Math.Max(max - min, 1e-9);              // keine Division durch 0
+    double rangeX = Math.Max(values.Count - 1, 1);
+    double w = ActualWidth - 2 * m, h = ActualHeight - 2 * m;
+
+    double ToX(int i)    => m + i / rangeX * w;
+    double ToY(double v) => m + (max - v) / rangeY * h;     // (max - v): großer Wert = oben
+
+    for (int i = 1; i < values.Count; i++)
+        if (values[i - 1] is { } a && values[i] is { } b)   // nur wenn BEIDE Werte da sind
+            dc.DrawLine(LinePen, new Point(ToX(i - 1), ToY(a)), new Point(ToX(i), ToY(b)));
+
+    if (min < 0 && max > 0)                                 // Null-Linie
+        dc.DrawLine(AxisPen, new Point(m, ToY(0)), new Point(m + w, ToY(0)));
+
+    int iMax = values.IndexOf(max);                         // Punkt markieren
+    dc.DrawEllipse(Brushes.Red, null, new Point(ToX(iMax), ToY(max)), 4, 4);
+}
+----
+
+* WPF-y wächst nach *unten*. Mit `(max - v)` statt `(v - min)` liegt der größte Wert oben.
+* Hier wird x und y *getrennt* skaliert (Diagramm füllt die Fläche). Bei Zeichnungen (Turtle) dagegen `Math.Min` beider Faktoren, damit nichts verzerrt.
+* `values[i] is { } b` = „ist nicht null, und nimm den Wert als `b`“. Fehlt einer der beiden Werte, wird die Linie unterbrochen.
+* Lokale Funktionen (`double ToX(int i) => ...`) direkt in `OnRender` halten die Umrechnung kurz.
+
 == Styles und Trigger
 
 === Button-Farbe ändern
@@ -1515,6 +1583,10 @@ okButton.Background = Brushes.Red;                                 // Code-Behin
 * Vergleicht nur auf Gleichheit (kein `>`/`<`). Für Bereiche eine `bool`-Property im ViewModel ergänzen.
 * Treffen mehrere Trigger zu, gewinnt der letzte.
 * Den Standardwert als `Setter` im Style setzen, nicht direkt am Element. Ein lokales Attribut schlägt jeden Trigger.
+* Auf `null` prüfen: `Value="{x:Null}"`, z. B. Zeilen ohne Station grau:
+  `<DataTrigger Binding="{Binding StationId}" Value="{x:Null}"><Setter Property="Foreground" Value="Gray"/></DataTrigger>`
+  (in den `ItemContainerStyle` der Liste, siehe „Style für Listeneinträge“).
+* Auf eine Zahl prüfen geht direkt: `Binding="{Binding Rank}" Value="1"`.
 
 === MultiDataTrigger
 
@@ -2372,6 +2444,43 @@ foreach (char c in text)
 * `c is >= 'A' and <= 'H'` prüft einen Bereich (Pattern Matching).
 * Fehlt die Zahl (oder ist sie `0`), gilt `1`. Leerzeichen und Zeilenumbrüche fallen in das `else continue`.
 
+=== Text in Einträge zerlegen (Kommentar, Trennzeichen, Wiederholung n*wert)
+
+[source,csharp]
+----
+// "# Kopf\n4.2 3*3.1 x; -0.5"  →  4.2, 3.1, 3.1, 3.1, null, -0.5
+var values = new List<double?>();
+foreach (var raw in content.Split('\n'))
+{
+    int hash = raw.IndexOf('#');                              // -1 = nicht gefunden
+    var line = hash >= 0 ? raw[..hash] : raw;                 // Kommentar abschneiden
+
+    foreach (var token in line.Split(new[] { ' ', '\t', '\r', ';' }, StringSplitOptions.RemoveEmptyEntries))
+    {
+        int count = 1;
+        var text  = token;
+        int star  = token.IndexOf('*');
+        if (star >= 0)                                        // "3*12.5"
+        {
+            if (!int.TryParse(token[..star], out count) || count < 1) continue;   // ungültig → ignorieren
+            text = token[(star + 1)..];
+        }
+
+        double? value;
+        if (text is "x" or "X") value = null;
+        else if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)) value = d;
+        else continue;                                        // "abc", "1,5" → ignorieren
+
+        for (int i = 0; i < count; i++) values.Add(value);
+    }
+}
+----
+
+* `s[..n]` = Zeichen 0 bis n-1 (wie `Substring(0, n)`), `s[(n + 1)..]` = alles nach Position n.
+* `Split(..., StringSplitOptions.RemoveEmptyEntries)` verhindert leere Einträge bei mehreren Leerzeichen hintereinander.
+* `NumberStyles.Float` + `InvariantCulture`: Punkt als Dezimaltrennzeichen, Minus erlaubt, Beistrich (`1,5`) wird abgelehnt.
+* `int.TryParse("-2")` liefert `-2` → deshalb `count < 1` extra prüfen.
+
 === Dateien, Ordner und Pfade
 
 [source,csharp]
@@ -2528,6 +2637,29 @@ public async Task<List<ItemDto>> GetItemsAsync(int? categoryId)
 * `Where` nur anhängen, wenn ein Filter gesetzt ist (`null` = alle).
 * `Select` in ein DTO lädt nur die angezeigten Spalten. `Parts.Count` wird zu `COUNT(*)`, nicht zum Laden aller Elemente.
 * `string.Join` im letzten `Select` ist erlaubt. Je nach Datenbank übersetzt EF es nach SQL oder baut den Text am Ende in C#.
+
+=== Summe, Min, Max, Durchschnitt in der Datenbank
+
+[source,csharp]
+----
+.Select(s => new SeriesOverviewDto
+{
+    ValueCount = s.Readings!.Count,                                        // COUNT(*)
+    MissingCount = s.Readings!.Count(r => r.Value == null),                // COUNT mit Bedingung
+    MinValue   = s.Readings!.Where(r => r.Value != null).Min(r => r.Value), // MIN, null wenn leer
+    MaxValue   = s.Readings!.Where(r => r.Value != null).Max(r => r.Value), // MAX
+    AvgValue   = s.Readings!.Average(r => r.Value),                         // AVG (ignoriert NULL)
+    Total      = s.Items!.Sum(i => i.Price),                                // SUM
+    Reports    = s.Reports!.OrderBy(r => r.Title).Select(r => r.Title).ToList(),
+})
+----
+
+* Wird alles zu einer SQL-Abfrage. Es werden keine einzelnen `Reading`-Zeilen geladen.
+* DTO-Property für Min/Max/Avg als `double?` deklarieren: Ohne Werte liefert die DB `NULL`.
+* Anzeige von `null`: `DisplayMemberBinding="{Binding MinValue, TargetNullValue='-'}"`.
+* Im ViewModel (nach dem Laden, z. B. Detail-Dialog) geht dasselbe mit LINQ in C#:
+  `var present = values.Where(v => v != null).Select(v => v!.Value).ToList(); present.Min(); present.Average();`
+  (`Min()` auf einer *leeren* Liste wirft eine Exception, vorher `present.Count > 0` prüfen.)
 
 === Mit abhängigen Daten laden (Include)
 
