@@ -103,7 +103,7 @@ MyTest.sln
 └── UnitTest/       ← xUnit + FluentAssertions, referenziert WPFApp → testet das ViewModel
 ----
 
-* *Zuerst die vorgegebenen Tests lesen.* Sie legen die Namen fest (`FileName`, `Match.TeamName1`, `LoadCommand`, `Load()` ...).
+* *Zuerst die vorgegebenen Tests lesen.* Sie legen die Namen fest (`FileName`, `Document.Title`, `LoadCommand`, `Load()` ...).
   Was der Test aufruft, muss `public` sein und genau so heißen.
 * Das ViewModel braucht einen parameterlosen Konstruktor, weil der Test `new MainViewModel()` aufruft.
 * Leere Methoden/`throw new NotImplementedException()` in Helpers sind die Stellen, die man selbst implementiert.
@@ -146,7 +146,7 @@ FileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Daten.txt");   /
 | `BaseWindowNavigator` | `ShowMessageBox(text)`, `AskYesNoMessageBox(caption, text)`, `CloseWindow()` (setzt `DialogResult = true`)
 |===
 
-* Die Base-Klassen nicht neu schreiben, sondern erben/verwenden: `public class Match : NotifyPropertyChanged`.
+* Die Base-Klassen nicht neu schreiben, sondern erben/verwenden: `public class Document : NotifyPropertyChanged`.
 * `RelayCommand` verwendet `CommandManager.RequerySuggested`: `CanExecute` wird nach jeder Eingabe automatisch neu geprüft.
 * Methodengruppe statt Lambda geht direkt: `new RelayCommand(Save, CanSave)` (Signaturen `void Save()` / `bool CanSave()`).
 
@@ -154,81 +154,93 @@ FileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Daten.txt");   /
 
 [source,csharp]
 ----
-// Logic/DTO: reine Daten, kein PropertyChanged, Werte wie in der Datei
-public class Event { public int EventHalf { get; set; } public int EventTime { get; set; } public string Text { get; set; } }
+// Logic/DTO: reine Daten, kein PropertyChanged, Werte so wie in der Datei
+public class Entry { public int Seconds { get; set; } public string Text { get; set; } = ""; }
 
 // WPFApp/Models: das, was das UI anzeigt/bindet (formatiert, bindbar)
-public class Match : NotifyPropertyChanged
+public class Document : NotifyPropertyChanged
 {
-    private string? _teamName1;
-    public string? TeamName1 { get => _teamName1; set => SetProperty(ref _teamName1, value); }
+    private string? _title;
+    public string? Title { get => _title; set => SetProperty(ref _title, value); }
 
-    public ObservableCollection<MatchEvent> Events { get; } = new();
+    public ObservableCollection<EntryRow> Entries { get; } = new();   // Tabelle
+
+    // Eingabefelder für einen neuen Eintrag
+    private string? _newTime;
+    public string? NewTime { get => _newTime; set => SetProperty(ref _newTime, value); }
+    private string? _newText;
+    public string? NewText { get => _newText; set => SetProperty(ref _newText, value); }
 }
+
+public class EntryRow { public string Time { get; set; } = ""; public string Text { get; set; } = ""; }   // eine Zeile
 ----
 
 * Model-Properties, an die eine `TextBox` bindet oder die `CanExecute` beeinflussen, brauchen `SetProperty`.
-* Zeilen-Objekte in einer nur lesbaren Liste (`MatchEvent`) dürfen einfache Auto-Properties sein.
-* Im XAML verschachtelt binden: `Text="{Binding Match.TeamName1, UpdateSourceTrigger=PropertyChanged}"`.
-* Model-Objekt im ViewModel als `public Match Match { get; } = new();` – nie ersetzen, nur Inhalt ändern.
+* Zeilen-Objekte in einer nur lesbaren Liste (`EntryRow`) dürfen einfache Auto-Properties sein.
+* Im XAML verschachtelt binden: `Text="{Binding Document.Title, UpdateSourceTrigger=PropertyChanged}"`.
+* Model-Objekt im ViewModel als `public Document Document { get; } = new();` – nie ersetzen, nur Inhalt ändern.
 
 === Laden und Speichern im ViewModel (Mapping)
 
 [source,csharp]
 ----
-private readonly MatchManager _manager = new();
+private readonly DataManager _manager = new();       // Lehrer-Klasse: Datei <-> DTO
 
 public bool CanLoad() => !string.IsNullOrWhiteSpace(FileName) && File.Exists(FileName);
 
 public void Load()
 {
     var dto = _manager.Load(FileName!);
-    Match.TeamName1 = dto.Team1.Name;
+    Document.Title = dto.Title;
 
-    Match.Events.Clear();                              // sonst doppelte Einträge beim 2. Laden
-    foreach (var e in dto.Events)
-        Match.Events.Add(new MatchEvent
+    Document.Entries.Clear();                           // sonst doppelte Einträge beim 2. Laden
+    foreach (var e in dto.Entries.OrderBy(e => e.Seconds))
+        Document.Entries.Add(new EntryRow
         {
-            EventTime = (e.EventHalf, e.EventTime).ToEventTime(),   // DTO → Anzeigeformat
-            EventText = e.Text,
+            Time = e.Seconds.ToTimeText(),              // DTO → Anzeigeformat (Helper)
+            Text = e.Text,
         });
 }
 
+public bool CanSave() =>
+    !string.IsNullOrWhiteSpace(Document.Title)
+    && Document.NewTime.IsValidTime()                   // Helper prüft das Format
+    && !string.IsNullOrWhiteSpace(Document.NewText);
+
 public void Save()
 {
-    Match.Events.Add(new MatchEvent { EventTime = Match.NewEventTime!, EventText = Match.NewEventText! });
+    Document.Entries.Add(new EntryRow { Time = Document.NewTime!, Text = Document.NewText! });
 
-    var dto = new Logic.DTO.Match
+    var dto = new Logic.DTO.DataSet
     {
-        Team1  = new Team { Name = Match.TeamName1! },
-        Events = Match.Events.Select(e =>
-        {
-            var (half, time) = e.EventTime.ToHalfAndTime();         // Anzeigeformat → DTO
-            return new Event { EventHalf = half, EventTime = time, Text = e.EventText };
-        }).ToArray(),
+        Title   = Document.Title!,
+        Entries = Document.Entries
+            .Select(r => new Entry { Seconds = r.Time.ToSeconds(), Text = r.Text })   // Anzeige → DTO
+            .ToArray(),
     };
     _manager.Save(dto, FileName!);
 
-    Match.NewEventTime = null;                         // Eingabefelder leeren (Test prüft das oft)
-    Match.NewEventText = null;
+    Document.NewTime = null;                            // Eingabefelder leeren (Test prüft das oft)
+    Document.NewText = null;
 }
 ----
 
-* Namenskonflikt `Match` (DTO) vs. `Match` (Model): voll qualifizieren (`Logic.DTO.Match`, `Models.Match`) oder `using Dto = Logic.DTO;`.
+* Gleicher Klassenname in DTO und Model? Voll qualifizieren (`Logic.DTO.Document`, `Models.Document`) oder `using Dto = Logic.DTO;`.
 * `Load()`/`Save()` `public` machen, damit der Test sie direkt aufrufen kann. Der Command ruft dieselbe Methode auf.
-* `CanSave` prüft *alle* Pflichtfelder: `!string.IsNullOrWhiteSpace(...) && ... && Time.IsValidEventTime()`.
+* `CanSave` prüft *alle* Pflichtfelder, inkl. Format-Prüfung über den Helper.
+* Muss die Liste sortiert sein: nach dem Hinzufügen neu sortieren (Liste neu aufbauen: `Clear()` + sortiert `Add`).
 
-== Vorlage mit Datenbank (Core / Persistence / Wpf.ViewModels – Turtle)
+== Vorlage mit Datenbank (Core / Persistence / Wpf.ViewModels)
 
 === Aufbau der Solution
 
 ----
-Turtle.sln
+MyApp.sln
 ├── Base/            ← Lehrer: AppService (DI), GenericRepository, BaseUnitOfWork, Transaction, CsvImport
 ├── Base.WpfMvvm/    ← Lehrer: NotifyPropertyChanged, RelayCommand, ValidatableBaseViewModel, BaseWindowNavigator
-├── Core/            ← Entities, Contracts (IUnitOfWork, I...Repository), DTOs, reine Logik (z. B. TurtleParser)
+├── Core/            ← Entities, Contracts (IUnitOfWork, I...Repository), DTOs, reine Logik (z. B. Parser)
 ├── Persistence/     ← ApplicationDbContext, UnitOfWork, ...Repository, ImportService
-├── ImportConsoleApp/← Konsolen-Import (Task 2)
+├── ImportConsoleApp/← Konsolen-Import (Dateien → DB)
 ├── Wpf.ViewModels/  ← ViewModels + IWindowNavigator (eigenes Projekt, kennt keine Fenster)
 └── Wpf/             ← App.xaml(.cs), Views/, Controls/, WindowNavigator
 ----
@@ -259,10 +271,10 @@ private void Application_Startup(object sender, StartupEventArgs e)
                            typeof(ViewModels.MainWindowViewModel).Assembly)     // alle ...ViewModel
         .AddDbContext<ApplicationDbContext>(o => o.UseSqlServer(connectionString))
         .AddScoped<IUnitOfWork, UnitOfWork>()
-        .AddTransient<IScriptRepository, ScriptRepository>()      // ... jedes Repository
+        .AddTransient<IItemRepository, ItemRepository>()      // ... jedes Repository
         .AddTransient<IImportService, ImportService>()
         .AddTransient<MainWindow>()                               // ... jedes Fenster
-        .AddTransient<ScriptPreviewWindow>();
+        .AddTransient<DetailWindow>();
     AppService.BuildServiceProvider();
 
     MainWindow = AppService.GetRequiredService<MainWindow>();
@@ -300,8 +312,8 @@ public class MainWindowViewModel : ValidatableBaseViewModel     // oder BaseView
 
     public override async Task InitializeDataAsync()            // Pflicht (abstract in BaseViewModel)
     {
-        await LoadOriginsAsync();
-        await LoadScriptsAsync();
+        await LoadCategoriesAsync();
+        await LoadItemsAsync();
     }
 }
 ----
@@ -316,8 +328,8 @@ public class MainWindowViewModel : ValidatableBaseViewModel     // oder BaseView
 // Wpf.ViewModels/IWindowNavigator.cs
 public interface IWindowNavigator : IBaseWindowNavigator      // erbt CloseWindow, ShowMessageBox, AskYesNoMessageBox
 {
-    void ShowScriptPreview(int scriptId);
-    bool ShowImportScript();
+    void ShowDetails(int itemId);
+    bool ShowImport();
 }
 
 // Wpf/WindowNavigator.cs
@@ -325,19 +337,19 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 {
     public WindowNavigator(Window window) : base(window) { }
 
-    public void ShowScriptPreview(int scriptId)
+    public void ShowDetails(int itemId)
     {
         using var scope  = AppService.ServiceProvider!.CreateScope();          // eigener DbContext für den Dialog
-        var       window = scope.ServiceProvider.GetRequiredService<ScriptPreviewWindow>();
-        ((ScriptPreviewViewModel)window.DataContext).ScriptId = scriptId;     // Parameter VOR ShowDialog setzen
+        var       window = scope.ServiceProvider.GetRequiredService<DetailWindow>();
+        ((DetailViewModel)window.DataContext).ItemId = itemId;     // Parameter VOR ShowDialog setzen
         window.Owner = Window;
         window.ShowDialog();
     }
 
-    public bool ShowImportScript()
+    public bool ShowImport()
     {
         using var scope  = AppService.ServiceProvider!.CreateScope();
-        var       window = scope.ServiceProvider.GetRequiredService<ImportScriptWindow>();
+        var       window = scope.ServiceProvider.GetRequiredService<ImportWindow>();
         window.Owner = Window;
         return window.ShowDialog() == true;                                    // true = importiert → neu laden
     }
@@ -347,11 +359,11 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 [source,csharp]
 ----
 // im ViewModel
-DetailsCommand = new RelayCommand(() => Controller?.ShowScriptPreview(SelectedScript!.Id),
-                                  () => SelectedScript != null);
+DetailsCommand = new RelayCommand(() => Controller?.ShowDetails(SelectedItem!.Id),
+                                  () => SelectedItem != null);
 ImportCommand  = new RelayCommand(async () =>
 {
-    if (Controller?.ShowImportScript() == true) await LoadScriptsAsync();
+    if (Controller?.ShowImport() == true) await LoadItemsAsync();
 });
 CloseCommand   = new RelayCommand(() => Controller?.CloseWindow());           // im Dialog
 Controller?.ShowMessageBox($"Fehler: {ex.GetBaseException().Message}");
@@ -359,7 +371,7 @@ Controller?.ShowMessageBox($"Fehler: {ex.GetBaseException().Message}");
 
 * Pro Dialog: eine Methode im Interface (in `Wpf.ViewModels`) + Umsetzung im `WindowNavigator` (in `Wpf`).
 * `CloseWindow()` setzt `DialogResult = true` → `ShowDialog()` liefert `true`. Das „X“ oben rechts liefert `false`.
-* Der Parameter (`ScriptId`) ist eine normale Property. `InitializeDataAsync` läuft erst bei `Loaded`, also nach dem Setzen.
+* Der Parameter (`ItemId`) ist eine normale Property. `InitializeDataAsync` läuft erst bei `Loaded`, also nach dem Setzen.
 
 === UnitOfWork und GenericRepository der Vorlage
 
@@ -368,7 +380,7 @@ Controller?.ShowMessageBox($"Fehler: {ex.GetBaseException().Message}");
 | `await _uow.XRepository.GetNoTrackingAsync(filter, orderBy, includes)` | Liste nur lesen: `GetNoTrackingAsync(o => o.Active, q => q.OrderBy(o => o.Name))`
 | `await _uow.XRepository.GetAsync(...)` | wie oben, aber getrackt (zum Ändern)
 | `await _uow.XRepository.GetByIdAsync(id)` | ein Objekt zum Ändern laden
-| `await _uow.XRepository.GetNoTrackingByIdAsync(id, nameof(Script.Moves))` | ein Objekt lesen, mit Include als String
+| `await _uow.XRepository.GetNoTrackingByIdAsync(id, nameof(Item.Details))` | ein Objekt lesen, mit Include als String
 | `CountAsync(filter)` / `ExistsAsync(id)` | Anzahl / existiert?
 | `await AddAsync(entity)` / `Remove(entity)` | neu / löschen (gespeichert erst mit SaveChanges)
 | `await _uow.SaveChangesAsync()` | Änderungen in die DB schreiben
@@ -378,48 +390,49 @@ Controller?.ShowMessageBox($"Fehler: {ex.GetBaseException().Message}");
 [source,csharp]
 ----
 // Ändern (Edit/Update): getrackt laden, Wert setzen, speichern
-var script = await _uow.ScriptRepository.GetByIdAsync(SelectedScript.Id);
-script!.OriginId = SelectedEditOrigin is { Id: > 0 } o ? o.Id : null;   // Platzhalter "<None>" (Id 0) → null
+var item = await _uow.ItemRepository.GetByIdAsync(SelectedItem.Id);
+item!.CategoryId = SelectedEditCategory is { Id: > 0 } o ? o.Id : null;   // Platzhalter "<None>" (Id 0) → null
 await _uow.SaveChangesAsync();
 ----
 
-* Eigene Abfragen (Filter + DTO, `Count`, `string.Join`) als Methode im Repository: `IQueryable<Script> query = DbSet.AsNoTracking();`
+* Eigene Abfragen (Filter + DTO, `Count`, `string.Join`) als Methode im Repository: `IQueryable<Item> query = DbSet.AsNoTracking();`
   dann weiter wie in „Gefiltert und sortiert in der Datenbank abfragen“.
-* Methode im Interface (`Core/Contracts/IScriptRepository.cs`) *und* in der Klasse (`Persistence/ScriptRepository.cs`) ergänzen.
+* Methode im Interface (`Core/Contracts/IItemRepository.cs`) *und* in der Klasse (`Persistence/ItemRepository.cs`) ergänzen.
 
 === Import mit Transaktion über die UnitOfWork
 
 [source,csharp]
 ----
-public async Task ImportScriptAsync(string name, string? description, string? origin, DateOnly date, string fileName)
+public async Task ImportItemAsync(string name, string? description, string? category, DateOnly date, string fileName)
 {
-    var moves = TurtleParser.Parse(await File.ReadAllTextAsync(fileName));
+    var values = Parser.Parse(await File.ReadAllTextAsync(fileName));     // eigener Parser (Core)
 
-    using var trans = _uow.BeginTransaction();                    // eine Transaktion pro Script
+    using var trans = _uow.BeginTransaction();                    // eine Transaktion pro Datensatz
 
-    var script = new Script
+    if (await _uow.ItemRepository.CountAsync(i => i.Name == name) > 0)
+        throw new InvalidOperationException($"'{name}' existiert bereits.");
+
+    var item = new Item
     {
         Name         = name,
         Description  = description,
         CreationDate = date,
-        Origin       = origin == null ? null : await GetOrCreateOriginAsync(origin),   // Navigation-Property
-        Moves = moves.Select((m, i) => new Move                    // Select mit Index → SeqNo
-        {
-            SeqNo = i + 1, Direction = (int)m.Direction, Repeat = m.Count, Color = m.Color
-        }).ToList(),
+        Category     = category == null ? null : await GetOrCreateCategoryAsync(category),   // Navigation-Property
+        Details = values.Select((v, i) => new Detail { SeqNo = i + 1, Value = v })          // Select mit Index → SeqNo
+                        .ToList(),
     };
-    await _uow.ScriptRepository.AddAsync(script);   // Moves + Origin kommen mit
+    await _uow.ItemRepository.AddAsync(item);       // Details + Category kommen mit
 
     await trans.CommitTransactionAsync();
 }
 
-private async Task<Origin> GetOrCreateOriginAsync(string code)
+private async Task<Category> GetOrCreateCategoryAsync(string code)
 {
-    var existing = (await _uow.OriginRepository.GetAsync(o => o.Code == code)).FirstOrDefault();
+    var existing = (await _uow.CategoryRepository.GetAsync(c => c.Code == code)).FirstOrDefault();
     if (existing != null) return existing;
-    var origin = new Origin { Code = code, Name = code };
-    await _uow.OriginRepository.AddAsync(origin);
-    return origin;
+    var category = new Category { Code = code, Name = code };
+    await _uow.CategoryRepository.AddAsync(category);
+    return category;
 }
 ----
 
@@ -428,16 +441,16 @@ private async Task<Origin> GetOrCreateOriginAsync(string code)
 [source,csharp]
 ----
 // Hinzufügen → Benutzersteuerelement (UserControl)
-public partial class ScriptPreviewControl : UserControl
+public partial class PreviewControl : UserControl
 {
-    public static readonly DependencyProperty MovesProperty = DependencyProperty.Register(
-        nameof(Moves), typeof(IList<Move>), typeof(ScriptPreviewControl),
-        new FrameworkPropertyMetadata(new List<Move>(), FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty ValuesProperty = DependencyProperty.Register(
+        nameof(Values), typeof(IList<double?>), typeof(PreviewControl),
+        new FrameworkPropertyMetadata(new List<double?>(), FrameworkPropertyMetadataOptions.AffectsRender));
 
-    public IList<Move> Moves              // bindbar
+    public IList<double?> Values          // bindbar (Typ = was das ViewModel liefert)
     {
-        get => (IList<Move>)GetValue(MovesProperty);
-        set => SetValue(MovesProperty, value);
+        get => (IList<double?>)GetValue(ValuesProperty);
+        set => SetValue(ValuesProperty, value);
     }
 
     private static readonly Pen[] Pens = { new(Brushes.Red, 1), new(Brushes.Orange, 1), new(Brushes.Blue, 1) /* ... */ };
@@ -446,11 +459,9 @@ public partial class ScriptPreviewControl : UserControl
     {
         base.OnRender(dc);
         dc.DrawRectangle(Brushes.White, null, new Rect(0, 0, ActualWidth, ActualHeight));
-        // 1. Durchlauf: Bounding Box (minX/maxX/minY/maxY)
-        // 2. scale = Math.Min((ActualWidth-2*m)/sizeX,
-        //                     (ActualHeight-2*m)/sizeY)
-        // 3. Durchlauf, nur wenn Color != null:
-        //    dc.DrawLine(Pens[color % Pens.Length], von, nach)
+        // 1. min/max der Daten bestimmen (Bounding Box)
+        // 2. Skalierung berechnen (mit Rand)
+        // 3. zeichnen: dc.DrawLine(pen, von, nach), dc.DrawEllipse(...), ...
     }
 }
 ----
@@ -459,15 +470,15 @@ public partial class ScriptPreviewControl : UserControl
 ----
 <Window ... xmlns:controls="clr-namespace:Wpf.Controls">
 <Border Grid.Row="1" BorderBrush="Black" BorderThickness="1">
-    <controls:ScriptPreviewControl Moves="{Binding Moves}" />
+    <controls:PreviewControl Values="{Binding Values}" />
 </Border>
 ----
 
-* Ein normales C#-Property ist *nicht* bindbar. Für `Moves="{Binding ...}"` braucht ein Control eine `DependencyProperty`
+* Ein normales C#-Property ist *nicht* bindbar. Für `Values="{Binding ...}"` braucht ein Control eine `DependencyProperty`
   (Muster oben: `static readonly ...Property` + Property mit `GetValue/SetValue`).
 * `AffectsRender`: bei neuem Wert wird `OnRender` automatisch neu aufgerufen. Bei Größenänderung des Fensters ebenfalls.
-* `ActualWidth/ActualHeight` = aktuelle Größe des Controls. Skalierung siehe „Zeichnung auf die Fläche skalieren“,
-  Richtungen siehe „Richtung als Index (8 Nachbarn)“, Farben siehe „Farbe aus einem Index“.
+* `ActualWidth/ActualHeight` = aktuelle Größe des Controls. Fertige Beispiele: „Liniendiagramm mit OnRender“,
+  „Zeichnung auf die Fläche skalieren“, „Richtung als Index (8 Nachbarn)“, „Farbe aus einem Index“.
 * Wichtige Methoden: `DrawLine(pen, p1, p2)`, `DrawRectangle(brush, pen, rect)`, `DrawEllipse(brush, pen, center, rx, ry)`.
   `Pen` = Linie (Farbe + Dicke), `Brush` = Füllung.
 
@@ -476,12 +487,12 @@ public partial class ScriptPreviewControl : UserControl
 [source,csharp]
 ----
 [Required(ErrorMessage = "Filename is required")]
-[CustomValidation(typeof(ImportScriptViewModel), nameof(ValidateFileName))]
+[CustomValidation(typeof(ImportViewModel), nameof(ValidateFileName))]
 public string FileName { get => _fileName; set => SetProperty(ref _fileName, value); }
 
 public static ValidationResult? ValidateFileName(string? fileName, ValidationContext context)
 {
-    var vm = (ImportScriptViewModel)context.ObjectInstance;   // das ViewModel
+    var vm = (ImportViewModel)context.ObjectInstance;   // das ViewModel
     return vm.FileExists
         ? ValidationResult.Success
         : new ValidationResult("File does not exist", new[] { nameof(FileName) });
@@ -640,7 +651,7 @@ public MainWindowViewModel()
 * `CommandParameter` übergibt einen Wert an `Execute(object parameter)`. Aus XAML kommt ein `string`.
 * So bedient ein einziger Command viele gleichartige Buttons.
 
-=== Spielfeld: viele Buttons, ein Command, Index-Binding
+=== Viele gleiche Buttons, ein Command, Index-Binding (Raster)
 
 [source,xml]
 ----
@@ -965,7 +976,7 @@ public class EditViewModel : ValidatableBaseViewModel
     public string? Name { get => _name; set => SetProperty(ref _name, value); }
 
     private string? _time;
-    [RegularExpression(@"^\d+'(\+\d+)?$", ErrorMessage = "Format: 45' oder 45'+2")]
+    [RegularExpression(@"^\d{1,2}:\d{2}$", ErrorMessage = "Format: mm:ss")]
     public string? Time { get => _time; set => SetProperty(ref _time, value); }
 
     [Range(0, 120)] public int Minute { get => _minute; set => SetProperty(ref _minute, value); }
@@ -982,7 +993,7 @@ public class EditViewModel : ValidatableBaseViewModel
 ----
 
 * Jedes `OnPropertyChanged` prüft *alle* Attribute des ViewModels neu und setzt `HasErrors`/`IsValid`.
-* Geprüft werden nur Properties *dieses* ViewModels, nicht die eines verschachtelten Models (`Match.TeamName1`).
+* Geprüft werden nur Properties *dieses* ViewModels, nicht die eines verschachtelten Models (`Document.Title`).
 * Eigene Regel zusätzlich: nach `ValidateViewModelProperties()` mit `AddError(nameof(Time), "ungültige Zeit")` ergänzen.
 * Fehleranzeige im XAML wie oben (`Validation.Errors`). Roter Rahmen kommt automatisch.
 
@@ -1127,12 +1138,12 @@ UpdateCommand = new DelegateCommand(async () =>
 
 [source,xml]
 ----
-<DataGrid Grid.Row="2" ItemsSource="{Binding Match.Events}" SelectedItem="{Binding SelectedEvent}"
+<DataGrid Grid.Row="2" ItemsSource="{Binding Document.Entries}" SelectedItem="{Binding SelectedEntry}"
           AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
           HeadersVisibility="Column" SelectionMode="Single" VerticalScrollBarVisibility="Visible">
     <DataGrid.Columns>
-        <DataGridTextColumn Header="Time"        Width="80"   Binding="{Binding EventTime}"/>
-        <DataGridTextColumn Header="Event"       Width="Auto" Binding="{Binding EventText}"/>
+        <DataGridTextColumn Header="Time"        Width="80"   Binding="{Binding Time}"/>
+        <DataGridTextColumn Header="Text"        Width="Auto" Binding="{Binding Text}"/>
         <DataGridTextColumn Header="Information" Width="*"    Binding="{Binding EventInformation}"/>
         <DataGridTextColumn Header="Preis"       Binding="{Binding Price, StringFormat=N2}"/>
         <DataGridCheckBoxColumn Header="Aktiv"   Binding="{Binding IsActive}"/>
@@ -1433,7 +1444,7 @@ Point ToCanvas(Point p) => new((p.X - minX) * scale + Margin,
 
 * Erst die Bounding Box (min/max) bestimmen, dann verschieben (`- minX`) und skalieren (`* scale`).
 * `Math.Min` der beiden Faktoren behält das Seitenverhältnis. `Math.Max(..., 1)` verhindert eine Division durch 0.
-* Negative Koordinaten (Turtle läuft nach links/oben) sind so kein Problem.
+* Negative Koordinaten (Figur läuft nach links/oben aus dem Startpunkt) sind so kein Problem.
 
 === Alternative: Viewbox skaliert automatisch
 
@@ -1459,7 +1470,7 @@ protected override void OnRender(DrawingContext dc)        // in einem UserContr
     base.OnRender(dc);
     dc.DrawRectangle(Brushes.White, null, new Rect(0, 0, ActualWidth, ActualHeight));
 
-    var values  = Values;                                   // IList<double?>, null = Ausfall
+    var values  = Values;                                   // IList<double?>, null = kein Wert
     var present = values.Where(v => v != null).Select(v => v!.Value).ToList();
     if (present.Count == 0 || ActualWidth <= 20 || ActualHeight <= 20) return;
 
@@ -1485,7 +1496,7 @@ protected override void OnRender(DrawingContext dc)        // in einem UserContr
 ----
 
 * WPF-y wächst nach *unten*. Mit `(max - v)` statt `(v - min)` liegt der größte Wert oben.
-* Hier wird x und y *getrennt* skaliert (Diagramm füllt die Fläche). Bei Zeichnungen (Turtle) dagegen `Math.Min` beider Faktoren, damit nichts verzerrt.
+* Hier wird x und y *getrennt* skaliert (Diagramm füllt die Fläche). Bei Zeichnungen/Figuren dagegen `Math.Min` beider Faktoren, damit nichts verzerrt.
 * `values[i] is { } b` = „ist nicht null, und nimm den Wert als `b`“. Fehlt einer der beiden Werte, wird die Linie unterbrochen.
 * Lokale Funktionen (`double ToX(int i) => ...`) direkt in `OnRender` halten die Umrechnung kurz.
 
@@ -1583,8 +1594,8 @@ okButton.Background = Brushes.Red;                                 // Code-Behin
 * Vergleicht nur auf Gleichheit (kein `>`/`<`). Für Bereiche eine `bool`-Property im ViewModel ergänzen.
 * Treffen mehrere Trigger zu, gewinnt der letzte.
 * Den Standardwert als `Setter` im Style setzen, nicht direkt am Element. Ein lokales Attribut schlägt jeden Trigger.
-* Auf `null` prüfen: `Value="{x:Null}"`, z. B. Zeilen ohne Station grau:
-  `<DataTrigger Binding="{Binding StationId}" Value="{x:Null}"><Setter Property="Foreground" Value="Gray"/></DataTrigger>`
+* Auf `null` prüfen: `Value="{x:Null}"`, z. B. Zeilen ohne Kategorie grau:
+  `<DataTrigger Binding="{Binding CategoryId}" Value="{x:Null}"><Setter Property="Foreground" Value="Gray"/></DataTrigger>`
   (in den `ItemContainerStyle` der Liste, siehe „Style für Listeneinträge“).
 * Auf eine Zahl prüfen geht direkt: `Binding="{Binding Rank}" Value="1"`.
 
@@ -2097,7 +2108,7 @@ private void OkButton_Click(object sender, RoutedEventArgs e) { ... }
 
 * Klassischer Weg ohne MVVM. `x:Name` macht das Control im Code-Behind als Feld verfügbar.
 
-=== Ein Handler für viele Buttons (Rechner ohne MVVM)
+=== Ein Handler für viele Buttons (Code-Behind ohne MVVM)
 
 [source,xml]
 ----
@@ -2431,9 +2442,9 @@ foreach (char c in text)
     }
 
     int count = prefix == 0 ? 1 : prefix;
-    if (c == '$')                    color = prefix;
-    else if (c is >= 'A' and <= 'H') AddMove(c - 'A', count, color);   // Großbuchstabe: zeichnen
-    else if (c is >= 'a' and <= 'h') AddMove(c - 'a', count, null);    // Kleinbuchstabe: nur bewegen
+    if (c == '$')                    option = prefix;                      // Sonderzeichen mit Zahl als Wert
+    else if (c is >= 'A' and <= 'H') AddCommand(c - 'A', count, option);   // Großbuchstabe
+    else if (c is >= 'a' and <= 'h') AddCommand(c - 'a', count, null);     // Kleinbuchstabe: Variante
     else continue;                   // unbekanntes Zeichen ignorieren, Prefix bleibt
 
     prefix = 0;                      // nach jedem Kommando zurücksetzen
@@ -2488,13 +2499,15 @@ foreach (var raw in content.Split('\n'))
 foreach (var dir in Directory.GetDirectories(root))          // nur eine Ebene tief
     foreach (var file in Directory.GetFiles(dir, "*.txt"))
     {
-        string folder = Path.GetFileName(dir);                // "Kevin"
-        string name   = Path.GetFileNameWithoutExtension(file); // "KevinDrawing1_20250225"
-        string rel    = Path.GetRelativePath(root, file);       // "Kevin\KevinDrawing1_20250225.txt"
+        string folder = Path.GetFileName(dir);                // "GroupA"
+        string name   = Path.GetFileNameWithoutExtension(file); // "Data1_20250225"
+        string rel    = Path.GetRelativePath(root, file);       // "GroupA\Data1_20250225.txt"
         string text   = await File.ReadAllTextAsync(file);
     }
 
 bool exists = File.Exists(path);
+string full = Path.IsPathRooted(path) ? path : Path.Combine(AppContext.BaseDirectory, path);   // relativ → absolut
+bool inRoot = Path.GetFullPath(Path.GetDirectoryName(file)!) == Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
 ----
 
 * `Path.GetFileName` auf einen Ordnerpfad (ohne abschließendes `\`) liefert den Ordnernamen. `Directory.GetDirectories` liefert Pfade ohne `\` am Ende.
@@ -2509,9 +2522,15 @@ DateTime date = DateTime.TryParseExact(last, "yyyyMMdd", CultureInfo.InvariantCu
                                        DateTimeStyles.None, out var d)
     ? d
     : DateTime.Today;                                         // Fallback
+
+var parts = name.Split('_');                                  // Datum nur, wenn es ein '_' gibt
+DateOnly day = parts.Length > 1 && DateOnly.TryParseExact(parts[^1], "yyyyMMdd",
+                   CultureInfo.InvariantCulture, DateTimeStyles.None, out var dd)
+    ? dd : DateOnly.FromDateTime(DateTime.Today);             // DateOnly-Variante
 ----
 
 * `TryParseExact` akzeptiert nur genau dieses Format und liefert bei ungültigen Werten (z. B. `20251399`) `false`.
+* `parts[^1]` = letztes Element. `DateOnly` für Spalten ohne Uhrzeit, Anzeige mit `StringFormat=d`.
 * `MM` = Monat, `mm` = Minuten.
 
 === Liste als Text
@@ -2525,64 +2544,75 @@ string text = string.Join(",", item.Tags.Select(t => t.Name));   // "C1,C3"
 
 [source,csharp]
 ----
-// Datei:  TeamA;TeamB          ← Kopfzeile
-//         0;17;Tor;0:1 durch …  ← Datenzeilen
-var lines  = File.ReadAllLines(fileName);
-var header = lines.First().Split(';');
-var events = lines.Skip(1)
-                  .Where(l => !string.IsNullOrWhiteSpace(l))     // leere Zeilen am Ende ignorieren
-                  .Select(l => l.Split(';'))
-                  .Select(c => new Event { EventHalf = int.Parse(c[0]), EventTime = int.Parse(c[1]), Text = c[2] })
-                  .ToList();
+// Datei:  Titel;10.5            ← Kopfzeile
+//         3;Text;2391           ← Datenzeilen: Nummer;Text;Wert
+var lines   = File.ReadAllLines(fileName);
+var header  = lines.First().Split(';');
+var entries = lines.Skip(1)
+                   .Where(l => !string.IsNullOrWhiteSpace(l))     // leere Zeilen am Ende ignorieren
+                   .Select(l => l.Split(';'))
+                   .Select(c => new Entry { Number = int.Parse(c[0]), Text = c[1], Value = int.Parse(c[2]) })
+                   .ToList();
+double km = double.Parse(header[1], CultureInfo.InvariantCulture);  // Dezimalzahl mit Punkt
 
-var output = new List<string> { $"{match.Team1.Name};{match.Team2.Name}" };
-output.AddRange(match.Events.Select(e => $"{e.EventHalf};{e.EventTime};{e.Text}"));
+var output = new List<string> { $"{title};{km.ToString(CultureInfo.InvariantCulture)}" };
+output.AddRange(entries.Select(e => $"{e.Number};{e.Text};{e.Value}"));
 File.WriteAllLines(fileName, output);                       // überschreibt die Datei komplett
 ----
 
 * `Split(';', 4)` begrenzt auf 4 Teile, falls der letzte Text selbst `;` enthalten kann.
 * `File.AppendAllLines(file, new[] { line })` hängt nur an, statt alles neu zu schreiben.
-* Reihenfolge nach dem Laden sortieren: `.OrderBy(e => e.EventHalf).ThenBy(e => e.EventTime)`.
+* Reihenfolge nach dem Laden sortieren: `.OrderBy(e => e.Value).ThenBy(e => e.Text)`.
+* Dezimalzahlen in Dateien immer mit `InvariantCulture` lesen *und* schreiben, sonst wird aus `10.5` je nach PC `105` oder `10,5`.
 
 === Extension-Methoden und Tupel
 
 [source,csharp]
 ----
-public static class EventTimeExtensions          // static class, static Methode, "this" vor dem 1. Parameter
+public static class TimeExtensions               // static class, static Methode, "this" vor dem 1. Parameter
 {
-    public static string ToEventTime(this (int half, int time) t)
+    public static string ToTimeText(this int seconds)          // 3725 → "1:02:05", 2525 → "42:05"
     {
-        var (half, minute) = t;                  // Tupel zerlegen (Deconstruction)
-        return $"{half * 45 + minute}'";
+        if (seconds < 0) throw new ArgumentOutOfRangeException(nameof(seconds));
+        int h = seconds / 3600, m = seconds % 3600 / 60, s = seconds % 60;
+        return h > 0 ? $"{h}:{m:00}:{s:00}" : $"{m}:{s:00}";   // :00 = zweistellig
     }
 
-    public static bool IsValidEventTime(this string? s) => TryToHalfAndTime(s, out _);
+    public static (int part, int rest) DivRem(this int value, int size)   // Tupel als Rückgabe
+        => (value / size, value % size);
+
+    public static bool IsValidTime(this string? s) => s.TryParseTime(out _);
 }
 
-string s = (1, 3).ToEventTime();                 // Aufruf wie eine Instanzmethode
-var (h, m) = "48'".ToHalfAndTime();              // Rückgabe (int half, int time)
-var t = "48'".ToHalfAndTime(); int x = t.half;   // Zugriff über die Namen
+string t = 3725.ToTimeText();                    // Aufruf wie eine Instanzmethode
+var (part, rest) = 125.DivRem(60);                // Tupel zerlegen: part = 2, rest = 5
+var x = 125.DivRem(60); int p = x.part;           // Zugriff über die Namen
+string hm = (part, rest).ToString();             // "(2, 5)"
 ----
 
 * Die Methode erscheint auf dem Typ nach `this`, sobald der Namespace (`using Logic.Helpers;`) eingebunden ist.
+* Extension auf ein Tupel geht auch: `public static string ToText(this (int a, int b) t)` → Aufruf `(1, 5).ToText()`.
 * Eine Extension auf `string?` darf auch mit `null` aufgerufen werden, darum im Rumpf auf `null` prüfen.
-* Lookup-Tabellen statt vieler `if`: `int[] Start = { 0, 45, 90, 105 }; int[] Length = { 45, 45, 15, 15 };`
+* Lookup-Tabellen statt vieler `if`: `int[] Start = { 0, 45, 90 }; int[] Length = { 45, 45, 15 };` → `Start[i]`.
+* Formatieren: `{m:00}` zweistellig, `{x:0.00}` zwei Nachkommastellen, `{x:0.##}` höchstens zwei.
 
 === Try-Muster (TryParse selbst schreiben)
 
 [source,csharp]
 ----
-public static bool TryToHalfAndTime(this string? s, out (int half, int time) result)
+public static bool TryParseTime(this string? s, out int seconds)
 {
-    result = default;                            // out muss in jedem Pfad gesetzt werden
+    seconds = 0;                                 // out muss in jedem Pfad gesetzt werden
     if (string.IsNullOrWhiteSpace(s)) return false;
-    ...
-    result = (half, minute);
+    var m = TimeRegex.Match(s);                  // siehe „Regex“
+    if (!m.Success) return false;
+    ...                                          // Gruppen lesen, Bereiche prüfen (z. B. Minuten <= 59)
+    seconds = total;
     return true;
 }
 
-public static (int half, int time) ToHalfAndTime(this string s)
-    => s.TryToHalfAndTime(out var r) ? r : throw new FormatException($"Ungültig: '{s}'");
+public static int ToSeconds(this string s)
+    => s.TryParseTime(out var r) ? r : throw new FormatException($"Ungültig: '{s}'");
 ----
 
 * Einmal die Logik in `Try...` schreiben, die werfende Variante und `IsValid...` rufen sie nur auf.
@@ -2592,14 +2622,19 @@ public static (int half, int time) ToHalfAndTime(this string s)
 
 [source,csharp]
 ----
-private static readonly Regex TimeRegex = new(@"^\s*(\d+)\s*'\s*(?:\+\s*(\d+))?\s*$");
+// "42:05" oder "1:02:05" – Stunden optional
+private static readonly Regex TimeRegex = new(@"^\s*(?:(\d+):)?(\d{1,2}):(\d{2})\s*$");
 
-var m = TimeRegex.Match(input);                  // "45'+2"
+var m = TimeRegex.Match(input);                  // "1:02:05"
 if (!m.Success) return false;
-int minute = int.Parse(m.Groups[1].Value);       // 45
-int extra  = m.Groups[2].Success ? int.Parse(m.Groups[2].Value) : 0;   // 2
+int hours   = m.Groups[1].Success ? int.Parse(m.Groups[1].Value) : 0;   // optionale Gruppe
+int minutes = int.Parse(m.Groups[2].Value);      // 2
+int seconds = int.Parse(m.Groups[3].Value);      // 5
 
-bool ok = Regex.IsMatch(input, @"^[A-Z]{2}\d{3}$");
+// Beispiel mit Zusatz: "45'+2"  →  Gruppe 1 = 45, Gruppe 2 = 2 (optional)
+var r = Regex.Match("45'+2", @"^(\d+)'(?:\+(\d+))?$");
+
+bool ok = Regex.IsMatch(input, @"^[A-Z]{2}\d{3}$");   // z. B. "AB123"
 ----
 
 * `^ $` Anfang/Ende (sonst passt auch ein Teilstring), `\d` Ziffer, `+` 1-n, `*` 0-n, `?` optional, `\s` Leerzeichen.
@@ -2642,19 +2677,19 @@ public async Task<List<ItemDto>> GetItemsAsync(int? categoryId)
 
 [source,csharp]
 ----
-.Select(s => new SeriesOverviewDto
+.Select(i => new ItemOverviewDto
 {
-    ValueCount = s.Readings!.Count,                                        // COUNT(*)
-    MissingCount = s.Readings!.Count(r => r.Value == null),                // COUNT mit Bedingung
-    MinValue   = s.Readings!.Where(r => r.Value != null).Min(r => r.Value), // MIN, null wenn leer
-    MaxValue   = s.Readings!.Where(r => r.Value != null).Max(r => r.Value), // MAX
-    AvgValue   = s.Readings!.Average(r => r.Value),                         // AVG (ignoriert NULL)
-    Total      = s.Items!.Sum(i => i.Price),                                // SUM
-    Reports    = s.Reports!.OrderBy(r => r.Title).Select(r => r.Title).ToList(),
+    ValueCount   = i.Details!.Count,                                        // COUNT(*)
+    MissingCount = i.Details!.Count(d => d.Value == null),                  // COUNT mit Bedingung
+    MinValue     = i.Details!.Where(d => d.Value != null).Min(d => d.Value), // MIN, null wenn leer
+    MaxValue     = i.Details!.Where(d => d.Value != null).Max(d => d.Value), // MAX
+    AvgValue     = i.Details!.Average(d => d.Value),                         // AVG (ignoriert NULL)
+    Total        = i.Details!.Sum(d => d.Value),                             // SUM
+    TagNames     = i.Tags!.OrderBy(t => t.Name).Select(t => t.Name).ToList(),
 })
 ----
 
-* Wird alles zu einer SQL-Abfrage. Es werden keine einzelnen `Reading`-Zeilen geladen.
+* Wird alles zu einer SQL-Abfrage. Es werden keine einzelnen `Detail`-Zeilen geladen.
 * DTO-Property für Min/Max/Avg als `double?` deklarieren: Ohne Werte liefert die DB `NULL`.
 * Anzeige von `null`: `DisplayMemberBinding="{Binding MinValue, TargetNullValue='-'}"`.
 * Im ViewModel (nach dem Laden, z. B. Detail-Dialog) geht dasselbe mit LINQ in C#:
@@ -2803,16 +2838,16 @@ public class MainWindowViewModelTests
 ----
 using FluentAssertions;
 
-vm.Match.TeamName1.Should().Be("Test");
+vm.Document.Title.Should().Be("Test");
 vm.LoadCommand.CanExecute(null).Should().BeTrue();          // .BeFalse()
-vm.Match.Events.Should().HaveCount(2);                      // .BeEmpty() / .ContainSingle()
-vm.Match.NewEventText.Should().BeNullOrEmpty();             // .BeNull() / .NotBeNull()
-vm.Match.Events.First().EventTime.Should().Be("46'");
+vm.Document.Entries.Should().HaveCount(2);                  // .BeEmpty() / .ContainSingle()
+vm.Document.NewText.Should().BeNullOrEmpty();               // .BeNull() / .NotBeNull()
+vm.Document.Entries.First().Time.Should().Be("42:05");
 list.Should().Contain(x => x.Text == "Tor");
 list.Should().BeEquivalentTo(new[] { "A", "B" });           // gleicher Inhalt, Reihenfolge egal
 value.Should().BeGreaterThan(0).And.BeLessThan(10);
 
-Action act = () => "abc".ToHalfAndTime();
+Action act = () => "abc".ToSeconds();
 act.Should().Throw<FormatException>();
 ----
 
@@ -2824,9 +2859,9 @@ act.Should().Throw<FormatException>();
 [source,csharp]
 ----
 string file = Path.GetTempFileName();        // leere Temp-Datei, eindeutiger Name
-new MatchManager().Save(match, file);        // Testdaten über die Logic-Klasse schreiben
+new DataManager().Save(data, file);          // Testdaten über die Logic-Klasse schreiben
 
-var vm = new MatchViewModel { FileName = file };
+var vm = new MainViewModel { FileName = file };
 vm.Load();
 vm.Load();                                   // zweimal laden → darf nicht verdoppeln (Events.Clear!)
 
