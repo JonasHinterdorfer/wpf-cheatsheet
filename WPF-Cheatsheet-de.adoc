@@ -60,6 +60,34 @@ MyApp/
 * `xmlns:vm="clr-namespace:..."` macht einen C#-Namespace in XAML verfügbar.
 * Der `DataContext` wird an alle Kind-Elemente vererbt, daher sucht `{Binding X}` die Property `X` im ViewModel.
 * Das ViewModel braucht einen öffentlichen parameterlosen Konstruktor.
+* Der Namespace im `xmlns` muss exakt dem C#-`namespace` entsprechen (Groß-/Kleinschreibung zählt).
+* ViewModel in einem anderen Projekt (Klassenbibliothek): `xmlns:vm="clr-namespace:MyApp.ViewModels;assembly=MyApp.Core"`.
+* Den DataContext nur an *einer* Stelle setzen, also nicht zusätzlich im Code-Behind.
+
+=== DataContext im Code-Behind / zur Entwurfszeit
+
+[source,csharp]
+----
+public MainWindow()
+{
+    InitializeComponent();
+    DataContext = new MainWindowViewModel(service);   // Konstruktor mit Parametern möglich
+}
+
+var vm = (MainWindowViewModel)DataContext;           // im Code-Behind auf das ViewModel zugreifen
+----
+
+[source,xml]
+----
+<Window ...
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DataContext="{d:DesignInstance Type=vm:MainWindowViewModel}">
+----
+
+* Code-Behind ist nötig, wenn der Konstruktor des ViewModels Parameter braucht (Services, siehe DI).
+* `d:DataContext` gilt nur im Designer: IntelliSense für Bindings, zur Laufzeit wird keine Instanz erzeugt.
 
 == Properties und Benachrichtigung
 
@@ -143,6 +171,31 @@ Items.Clear();
 
 == Commands
 
+=== Aufbau von ICommand
+
+[source,csharp]
+----
+public interface ICommand                      // System.Windows.Input
+{
+    void Execute(object? parameter);           // WAS beim Klick passiert
+    bool CanExecute(object? parameter);        // DARF geklickt werden?
+    event EventHandler? CanExecuteChanged;     // „Bitte CanExecute neu prüfen!“
+}
+----
+
+[cols="1,3,2",options="header"]
+|===
+| Mitglied | Aufgabe | Aufgerufen von
+| `Execute` | führt die Aktion aus | WPF beim Klick
+| `CanExecute` | `false` → der Button wird automatisch ausgegraut (`IsEnabled = false`) | WPF beim Binden und nach jedem `CanExecuteChanged`
+| `CanExecuteChanged` | sagt dem Button, dass sich die Bedingung geändert haben könnte | der Button abonniert es, der `CommandManager` (oder eigener Code) löst es aus
+|===
+
+* `parameter` ist der Wert aus `CommandParameter`, ohne `CommandParameter` ist er `null`.
+* Ablauf: Fenster lädt → Button ruft einmal `CanExecute` auf → Benutzer tippt → `CommandManager.RequerySuggested`
+  löst `CanExecuteChanged` aus → Button prüft `CanExecute` neu → Klick ruft `Execute` auf.
+* Nicht für jeden Button eine eigene Klasse schreiben: *eine* allgemeine Klasse (`DelegateCommand`) bekommt die Aktion als Delegate übergeben.
+
 === DelegateCommand (RelayCommand)
 
 [source,csharp]
@@ -175,6 +228,51 @@ public class DelegateCommand : ICommand
 * Speichert, was der Command tut (`Action`) und wann er erlaubt ist (`Func<bool>`). Ohne zweites Argument ist er immer aktiv.
 * Zwei Konstruktoren: `() => ...` ohne Parameter oder `p => ...` mit `CommandParameter`.
 * Über `CommandManager.RequerySuggested` prüft WPF `CanExecute` nach jeder Benutzereingabe automatisch neu.
+* Häufiger Fehler: `public event EventHandler CanExecuteChanged;` ohne `add`/`remove` wird nie ausgelöst, der Button bleibt
+  dauerhaft aktiv bzw. grau (VS zeigt „0 references“). Immer an `CommandManager.RequerySuggested` weiterleiten.
+* Häufiger Fehler: `_canExecute() == null` *ruft* den Delegate auf und wirft eine `NullReferenceException`, wenn keiner übergeben wurde.
+  Den Delegate selbst prüfen: `_canExecute == null || _canExecute()` bzw. `_canExecute?.Invoke() ?? true`.
+* In echten Projekten erzeugt *CommunityToolkit.Mvvm* (`[ObservableProperty]`, `[RelayCommand]`) diesen Code automatisch.
+
+=== Generischer DelegateCommand<T>
+
+[source,csharp]
+----
+public class DelegateCommand<T> : ICommand
+{
+    private readonly Action<T> _execute;
+    private readonly Func<T, bool>? _canExecute;
+
+    public DelegateCommand(Action<T> execute, Func<T, bool>? canExecute = null)
+    {
+        _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+        _canExecute = canExecute;
+    }
+
+    public void Execute(object? parameter) => _execute((T)parameter!);
+    public bool CanExecute(object? parameter) => _canExecute == null || _canExecute((T)parameter!);
+
+    public event EventHandler? CanExecuteChanged
+    {
+        add => CommandManager.RequerySuggested += value;
+        remove => CommandManager.RequerySuggested -= value;
+    }
+}
+----
+
+[source,csharp]
+----
+ClearCommand = new DelegateCommand(() => Display = "");             // ohne Parameter
+DigitCommand = new DelegateCommand<string>(d => Display += d);      // mit Parameter
+----
+
+* Typsichere Alternative zu `Action<object>`: der Parameter muss nicht selbst gecastet werden.
+* `DelegateCommand<void>` gibt es nicht (Compilerfehler CS1547, `void` ist kein Typargument). Darum beide Klassen behalten.
+  Sie dürfen gleich heißen, weil Klassen mit unterschiedlich vielen Typparametern verschiedene Typen sind (wie `Action` und `Action<T>`).
+* Beide Klassen in `DelegateCommand.cs` ablegen oder die generische Datei `DelegateCommandOfT.cs` nennen.
+* `CommandParameter="7"` ist ein `string`. `DelegateCommand<string>` verwenden und `int.Parse(d)`, ein `(int)`-Cast wirft eine `InvalidCastException`.
+* Ohne `CommandParameter` ist der Parameter `null`. Bei Werttypen wie `DelegateCommand<int>` stürzt der Cast dann ab.
+* `CommandParameter="{Binding}"` übergibt das gebundene Element, z. B. `DelegateCommand<Cell>` in einem `ItemsControl`.
 
 === Command im ViewModel anlegen
 
@@ -189,6 +287,10 @@ public MainWindowViewModel()
 ----
 
 * Commands einmal im Konstruktor erzeugen, nicht bei jedem Lesen (`=> new ...`).
+* `Save` *ohne* Klammern übergibt die Methode. `Save()` würde sie sofort aufrufen und `void` übergeben (Compilerfehler).
+* Die Lambda „fängt“ `this` automatisch ein (Closure), daher ist kein Verweis auf das ViewModel nötig.
+* Werte ohne `CommandParameter` mitgeben, ebenfalls per Closure:
+  `foreach (var cell in Cells) cell.ClickCommand = new DelegateCommand(() => Play(cell));`
 * Liefert die zweite Lambda `false`, wird der gebundene Button automatisch deaktiviert.
 
 === Command binden
@@ -210,6 +312,8 @@ CommandManager.InvalidateRequerySuggested();
 ----
 
 * Nötig, wenn sich der Zustand ohne Benutzereingabe ändert (Timer, async-Code).
+* Alternative ohne `CommandManager`: ein eigenes Event, das man gezielt auslöst, z. B. im Setter der Property, von der `CanExecute` abhängt:
+  `public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);`
 
 === Tastenkürzel
 
@@ -249,8 +353,11 @@ CommandManager.InvalidateRequerySuggested();
 ----
 
 * `Auto` = so groß wie der Inhalt, `*` = restlicher Platz, `2*` = doppelter Anteil, Zahl = feste Pixel.
+* Eine leere `<RowDefinition/>` entspricht `Height="*"` (gleicher Anteil).
 * `Grid.Row/Column` sind 0-basiert. `RowSpan/ColumnSpan` verbinden Zellen.
 * Elemente in derselben Zelle liegen übereinander.
+* Layout nachbauen: zuerst Zeilen und Spalten zählen, dann für jedes Element `Row`, `Column`, `RowSpan` und `ColumnSpan` setzen.
+* `Grid`/`DockPanel` für die Grundstruktur des Fensters, `StackPanel` für kleine Gruppen.
 
 === GridSplitter
 
@@ -273,6 +380,10 @@ CommandManager.InvalidateRequerySuggested();
 
 * Stapelt Elemente vertikal (Standard) oder horizontal. Gut für Label + Eingabe-Zeilen und Button-Leisten.
 * Begrenzt die Größe der Kinder nicht, daher scrollt eine `ListBox` darin nie. Stattdessen eine Grid-Zeile mit `*` verwenden.
+* Hat in WPF keine `Spacing`-Property (anders als WinUI). Abstände über `Margin` an den Kindern, z. B. `Margin="5,0"`.
+* Ein horizontales StackPanel streckt die Kinder nicht auf die Breite. Soll die TextBox den Rest füllen, `DockPanel` oder eine `*`-Spalte verwenden.
+* Gleiche Label-Breite (`Width="100"`) richtet die Eingaben untereinander aus. Bei vielen Zeilen ist ein `Grid` sauberer.
+* `<Separator/>` zeichnet eine dünne horizontale Trennlinie zwischen Abschnitten.
 
 === DockPanel
 
@@ -286,6 +397,10 @@ CommandManager.InvalidateRequerySuggested();
 ----
 
 * Dockt Elemente in der Reihenfolge ihrer Deklaration an die Ränder. Das letzte Element füllt den Rest.
+* Ohne `DockPanel.Dock` dockt ein Kind *links*. Beim letzten Kind wird `Dock` ignoriert (`LastChildFill="True"` ist Standard).
+* Daher zuerst alle angedockten Elemente (`Top`, `Bottom` ...), das füllende Element (z. B. `DataGrid`) als *letztes* Kind.
+  Steht es davor, nimmt es den ganzen Platz und ein späteres `Dock="Bottom"`-Element wird nicht angezeigt.
+* Im `Grid` mit `Auto`/`*`/`Auto`-Zeilen ist die Reihenfolge im XAML egal.
 
 === WrapPanel / UniformGrid
 
@@ -295,7 +410,8 @@ CommandManager.InvalidateRequerySuggested();
 <UniformGrid Rows="3" Columns="3"> ... </UniformGrid>
 ----
 
-* `WrapPanel`: bricht in die nächste Zeile um, wenn der Platz ausgeht.
+* `WrapPanel`: bricht in die nächste Zeile um, wenn der Platz ausgeht. `ItemWidth`/`ItemHeight` erzwingen gleich große Zellen,
+  `Orientation="Vertical"` füllt spaltenweise.
 * `UniformGrid`: alle Zellen gleich groß, wird zeilenweise befüllt, kein `Grid.Row` nötig.
 
 === Canvas
@@ -310,6 +426,7 @@ CommandManager.InvalidateRequerySuggested();
 
 * Absolute Positionierung mit `Canvas.Left/Top`. Zum Zeichnen und für freie Anordnung.
 * Ohne `Background` empfängt der Canvas keine Mausklicks.
+* Nicht für Formulare verwenden: kein automatisches Layout, nichts passt sich der Fenstergröße an.
 
 === ScrollViewer
 
@@ -321,10 +438,13 @@ CommandManager.InvalidateRequerySuggested();
 ----
 
 * Zeigt Scrollbalken, wenn der Inhalt größer als der sichtbare Bereich ist.
+* `HorizontalScrollBarVisibility` ist standardmäßig `Disabled`. Für horizontales Scrollen auf `Auto` oder `Visible` setzen.
 
 === Häufige Layout-Properties
 
 * `Margin="links,oben,rechts,unten"`: Abstand nach außen. `Padding`: Abstand nach innen.
+  Kurzformen: `Margin="10"` = überall 10, `Margin="10,5"` = links/rechts 10, oben/unten 5.
+  Achtung: `Margin="0.2"` ist *ein* Wert (0,2 px überall), nicht `0,2`.
 * `HorizontalAlignment` / `VerticalAlignment`: `Left|Center|Right|Stretch`.
 * `HorizontalContentAlignment`: richtet den Inhalt innerhalb eines Controls aus.
 * `MinWidth`, `MaxWidth`, `Width="Auto"`.
@@ -357,6 +477,11 @@ CommandManager.InvalidateRequerySuggested();
 * `OneWay`: Quelle → UI. `TwoWay`: beide Richtungen (Standard bei `TextBox.Text`, `IsChecked`, `Slider.Value`).
   `OneTime`: einmal lesen. `OneWayToSource`: nur UI → Quelle.
 * `UpdateSourceTrigger=PropertyChanged` schreibt bei jedem Tastendruck zurück. Standard bei der TextBox ist `LostFocus`.
+  `Explicit`: nur beim Aufruf von `BindingExpression.UpdateSource()`.
+* Hängt `CanExecute` eines Buttons vom Text ab, unbedingt `PropertyChanged` verwenden. Sonst ist die Property beim Tippen
+  noch leer und der Button bleibt grau, bis die TextBox den Fokus verliert.
+* `UpdateSourceTrigger` wirkt nur bei Eingabe-Controls. Für Eingaben eine `TextBox` verwenden, ein `TextBlock` zeigt nur an.
+* Quellen eines Bindings: `DataContext` (Standard, MVVM), `ElementName=...`, `RelativeSource=...`, `Source={StaticResource ...}`.
 
 === An ein anderes Control binden
 
@@ -752,6 +877,43 @@ public ObservableCollection<ShapeBase> Shapes { get; } = new();   // enthält Ci
 ----
 
 * Tabellenartige Liste mit Überschriften. Jede Spalte bindet an eine Property.
+* Schlanker als ein `DataGrid`, aber ohne Gitterlinien.
+
+=== DataGrid (Tabelle mit eigenen Spalten)
+
+[source,xml]
+----
+<DataGrid ItemsSource="{Binding Events}"
+          AutoGenerateColumns="False"
+          IsReadOnly="True"
+          CanUserAddRows="False"
+          HeadersVisibility="Column">
+    <DataGrid.Columns>
+        <DataGridTextColumn Header="Time"        Binding="{Binding Time}"        Width="100"/>
+        <DataGridTextColumn Header="Event"       Binding="{Binding Event}"       Width="Auto"/>
+        <DataGridTextColumn Header="Information" Binding="{Binding Information}" Width="*"/>
+    </DataGrid.Columns>
+</DataGrid>
+----
+
+[source,csharp]
+----
+public ObservableCollection<MatchEvent> Events { get; } = new();
+
+Events.Clear();
+foreach (string line in File.ReadAllLines(path))
+{
+    string[] parts = line.Split(';', 3);       // höchstens 3 Teile, ';' im letzten Teil bleibt erhalten
+    if (parts.Length < 3) continue;
+    Events.Add(new MatchEvent { Time = parts[0], Event = parts[1], Information = parts[2] });
+}
+----
+
+* Eine Zeile = ein Objekt (Model-Klasse mit Properties), die Liste ist eine `ObservableCollection<T>`.
+* `AutoGenerateColumns="False"`: nur die selbst definierten Spalten (eigene Überschriften, Reihenfolge, Breiten).
+* `Width="*"`: die Spalte nimmt den restlichen Platz. `HeadersVisibility="Column"` blendet die graue Zeilenkopf-Spalte aus.
+* `CanUserAddRows="False"` entfernt die leere Eingabezeile am Ende.
+* Damit das DataGrid scrollt, als letztes Kind in ein `DockPanel` oder in eine `*`-Zeile eines `Grid` legen, nicht in ein StackPanel.
 
 == Zeichnen
 
@@ -1965,6 +2127,42 @@ bool exists = File.Exists(path);
 * `Path.GetFileName` auf einen Ordnerpfad (ohne abschließendes `\`) liefert den Ordnernamen. `Directory.GetDirectories` liefert Pfade ohne `\` am Ende.
 * `Directory.GetFiles(dir, "*.txt", SearchOption.AllDirectories)` sucht rekursiv. Ohne Option nur im angegebenen Ordner.
 
+=== Datei neben der .exe laden
+
+[source,csharp]
+----
+string path = Path.Combine(AppContext.BaseDirectory, "Lask-vs-BLW.txt");
+if (!File.Exists(path)) { /* Fehlermeldung anzeigen */ return; }
+string[] lines = File.ReadAllLines(path);
+----
+
+[source,xml]
+----
+<ItemGroup>
+  <None Update="Lask-vs-BLW.txt" CopyToOutputDirectory="PreserveNewest" />
+</ItemGroup>
+----
+
+* `AppContext.BaseDirectory` ist der Ordner der `.exe` (z. B. `bin\Debug\net10.0-windows\`) und endet bereits mit `\`.
+* `Directory.GetCurrentDirectory()` ist das *Arbeitsverzeichnis* und hängt davon ab, wie die App gestartet wurde, also unzuverlässig.
+* Pfade immer mit `Path.Combine` verbinden, nicht mit `+ "\\"` (sonst entsteht `\\`).
+* Damit die Datei im `bin`-Ordner landet: in den Dateieigenschaften *Copy to Output Directory = Copy if newer* (entspricht dem `ItemGroup` oben).
+
+=== Action und Func (Delegates)
+
+[cols="1,1,2",options="header"]
+|===
+| Delegate | Signatur | Beispiel
+| `Action` | `void M()` | `Action a = () => Count++;`
+| `Action<T>` | `void M(T x)` | `Action<string> a = s => Display += s;`
+| `Action<T1, T2>` | `void M(T1 x, T2 y)` | `Action<int, int> a = (x, y) => Sum = x + y;`
+| `Func<TResult>` | `TResult M()` | `Func<bool> f = () => Name != "";`
+| `Func<T, TResult>` | `TResult M(T x)` | `Func<string, bool> f = s => s.Length > 0;`
+|===
+
+* Bei `Func` ist der *letzte* Typ der Rückgabetyp. `Action` hat keine Rückgabe, ein `Func<void>` gibt es nicht.
+* Aufruf: `a("7");` oder `a.Invoke("7");`, bei möglichem `null`: `a?.Invoke("7");`.
+
 === Datum aus Text (fixes Format)
 
 [source,csharp]
@@ -2121,6 +2319,31 @@ dotnet add MyApp.Tests package Moq
 * Das Testprojekt braucht dasselbe `-windows`-Framework und `UseWPF`, weil das ViewModel `ICommand`/`CommandManager` verwendet.
 * Getestet wird nur das ViewModel, *kein* Fenster: Properties setzen, Commands ausführen, Ergebnis prüfen.
 * Ausführen: `dotnet test` oder im Test-Explorer. Einzelner Test: `dotnet test --filter "FullyQualifiedName~SaveCommand"`.
+
+=== Test-Explorer findet keine Tests
+
+[source,xml]
+----
+<PropertyGroup>
+  <IsPackable>false</IsPackable>
+  <IsTestProject>true</IsTestProject>
+</PropertyGroup>
+<ItemGroup>
+  <PackageReference Include="Microsoft.NET.Test.Sdk" Version="..." />
+  <PackageReference Include="xunit" Version="..." />
+  <PackageReference Include="xunit.runner.visualstudio" Version="..." />
+  <!-- MSTest: MSTest.TestAdapter + MSTest.TestFramework, NUnit: NUnit + NUnit3TestAdapter -->
+</ItemGroup>
+----
+
+* Tests erscheinen erst nach einem *erfolgreichen* Build (Strg+Umschalt+B). Fehler bei der Suche stehen unter *Ausgabe → Tests*.
+* Ohne `Microsoft.NET.Test.Sdk` und den passenden Adapter werden keine Tests gefunden. Schlägt der NuGet-Restore fehl
+  („Failed to restore“): Projektmappe → *NuGet-Pakete wiederherstellen*.
+* Verweist das Testprojekt auf ein `net10.0-windows`-Projekt, muss es selbst `net10.0-windows` sein, sonst schlägt der Build fehl.
+* Testklasse `public`, Methode `public` und nicht `static`, mit Attribut (`[Fact]`, `[TestMethod]`, `[Test]`). Async-Tests: `async Task`, nicht `async void`.
+* Test-Explorer → Einstellungen → *Prozessorarchitektur für AnyCPU-Projekte* auf `Auto` bzw. `x64` stellen.
+* Hilft nichts: VS schließen, den versteckten `.vs`-Ordner neben der `.sln` sowie alle `bin`/`obj`-Ordner löschen, neu bauen.
+* Findet `dotnet test` im Terminal die Tests, liegt das Problem nur in Visual Studio.
 
 === Aufbau eines Tests (Arrange / Act / Assert)
 
@@ -2299,1284 +2522,16 @@ public void CloseCommand_ClosesWithFalse()
 * Command im Template feuert nicht → `RelativeSource AncestorType=Window` verwenden.
 * Trigger wirkt nicht → Property wurde lokal am Element gesetzt. Standardwert in den Style verschieben.
 * Fenster wird beim Start nicht gefunden → `StartupUri`, `x:Class` und Namespace stimmen nicht überein.
-
-== WPF Notes: POSE 5CHIF (Aitenbichler 26/27)
-
-Source: Moodle course `POSE5CHIF2627` (id 5026). Samples downloaded to `~/MoodleFiles/POSE5CHIF/`.
-
-Legend:
-
-* ++[++Kurs++]++ *Course* means the answer comes from the Moodle material (sample projects).
-* ++[++Best Practice++]++ *Best practice* means the topic isn't in the course material, so this is the standard approach.
-
-=== Course overview
-
-*Test dates (page "Termine"):*
-
-[cols=",,",options="header",]
-|===
-|Test |Date |Topic
-|LF1 |25.11.2026 |WPF
-|LF2 |13.01.2027 |WPF / Angular
-|LF3 |17.03.2027 |Matura preparation
-|===
-
-*Sections and materials:*
-
-[cols=",,",options="header",]
-|===
-|Section |Material |Type
-|WPF - XAML |01 - Calculator |Assignment
-| |LayoutSample.zip (LayoutSample, LayoutSample1–4) |Demo
-| |FirstBinding.zip |Demo
-| |02 - HP Calculator |Assignment
-| |03 - TickTackToe (due 13.10.) |Assignment
-|WPF - MVVM |"MVVM", "MVVM in WPF" |External links
-| |Style.zip (Style1–4) |Demo
-| |04 - SoccerMatchTicker (due 03.11.) |Assignment
-|WPF - MVVM2 |05 - Turtle (due 17.11.) |Assignment
-| |06 - FindInFileAsync (due 24.11.) |Assignment
-|===
-
-The demos target `net10.0-windows` with `++<++UseWPF++>++true++<++/UseWPF++>++`.
-
-____
-The assignment descriptions and the two MVVM links can't be read through the Moodle API, and the browser wasn't reachable. Only the assignment titles and the demo code were used here.
-____
-
-'''''
-
-[[1-layout-panels-kurs]]
-=== 1. Layout panels ++[++Kurs++]++
-
-From `LayoutSample++*++`. `MainWindow` opens each demo window with `new XyzWindow().ShowDialog();` in a `Click` handler.
-
-[cols=",,",options="header",]
-|===
-|Panel |What it does |Course example
-|`StackPanel` |Stacks children vertically (default) or horizontally (`Orientation="Horizontal"`) |Label {plus} TextBox rows, nested StackPanels
-|`DockPanel` |Children dock with `DockPanel.Dock="Top/Left/Bottom/Right"`. *Order matters*: each child takes its edge from the space that's left. The *last child fills the rest* (`LastChildFill="True"` by default). |Top 1, Left, Bottom 1, … , Center
-|`Grid` |Rows and columns with `Grid.Row`, `Grid.Column`, `Grid.RowSpan`, `Grid.ColumnSpan`. Plain `++<++RowDefinition/++>++` = `Height="++*++"` (equal share). |4×4 grid with spanning buttons
-|`GridSplitter` |Lets the user resize grid columns/rows by dragging. Put it in a column with `Grid.RowSpan` and give it a `Width`. |`++<++GridSplitter Grid.Column="0" Grid.RowSpan="2" Width="9"/++>++`
-|`WrapPanel` |Lays out in a line and wraps when space runs out. `ItemWidth`/`ItemHeight` force a uniform cell size. |`Orientation="Vertical" Height="100" ItemWidth="150"`
-|`Canvas` |Absolute positioning with `Canvas.Left/Top/Right/Bottom`. No automatic layout or resizing. |Name form with fixed coordinates
-|`UniformGrid` |All cells the same size. Set `Rows`/`Columns`, then children fill in order. Can be nested. |3×3 grid inside a 2-row grid
-|`ScrollViewer` |Scrolls content bigger than the viewport. `HorizontalScrollBarVisibility` defaults to *Disabled*, so the course sets it to `Visible`. |Button 150×150 inside a small cell
-|===
-
-Typical exam task (LayoutSample1/3/4 use the same 4×4 grid with different spans): *"reproduce this layout"*. Count rows/columns, then set `Row`, `Column`, `RowSpan` and `ColumnSpan` for each element.
-
-++[++Best Practice++]++ *Grid sizing (not in the samples, but used a lot):*
-
-[source,xml]
-----
-<Grid>
-    <Grid.RowDefinitions>
-        <RowDefinition Height="Auto"/>   <!-- as big as its content -->
-        <RowDefinition Height="*"/>      <!-- takes the rest -->
-        <RowDefinition Height="2*"/>     <!-- twice as much as "*" -->
-        <RowDefinition Height="50"/>     <!-- fixed (device-independent pixels) -->
-    </Grid.RowDefinitions>
-</Grid>
-----
-
-Good practice: use `Grid`/`DockPanel` for the main window structure, `StackPanel` for small groups, and *avoid `Canvas` for forms* because it doesn't resize. Canvas is right for drawing, like the *Turtle* assignment.
-
-`Margin="10,10,10,10"` can be written as `Margin="10"`. The order is `Left,Top,Right,Bottom`, and `Margin="10,5"` means horizontal 10, vertical 5.
-
-'''''
-
-[[2-data-binding-basics-kurs]]
-=== 2. Data binding basics ++[++Kurs++]++
-
-From `FirstBinding`. This is element-to-element binding without a ViewModel:
-
-[source,xml]
-----
-<!-- OneWay: the ComboBox text ("Red") becomes the Background brush -->
-<TextBox Background="{Binding ElementName=colorPickerCB, Path=Text, Mode=OneWay}"/>
-
-<!-- TwoWay + UpdateSourceTrigger=PropertyChanged: updates on every key press -->
-<TextBox Name="edit01"
-         Text="{Binding ElementName=edit02, Path=Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-
-<!-- TwoWay + LostFocus: source updates only when edit11 loses focus -->
-<TextBox Name="edit11"
-         Text="{Binding ElementName=edit12, Path=Text, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"/>
-----
-
-[cols=",",options="header",]
-|===
-|Mode |Direction
-|`OneWay` |Source → Target
-|`TwoWay` |Source ↔ Target (default for `TextBox.Text`, `CheckBox.IsChecked`, …)
-|`OneWayToSource` |Target → Source
-|`OneTime` |Source → Target, once at startup
-|===
-
-[cols=",",options="header",]
-|===
-|UpdateSourceTrigger |When Target → Source is written
-|`PropertyChanged` |Every change (each key press)
-|`LostFocus` |When the control loses focus (*default for `TextBox.Text`*)
-|`Explicit` |Only when `BindingExpression.UpdateSource()` is called
-|===
-
-Binding source options: the `DataContext` (default, used for MVVM), `ElementName=…`, `RelativeSource=++{++RelativeSource AncestorType=Window}`, and `Source=++{++StaticResource …}`.
-
-'''''
-
-[[3-mvvm-infrastructure-kurs]]
-=== 3. MVVM infrastructure ++[++Kurs++]++
-
-From `Style3`/`Style4`. The course uses its own small helper classes in a `Tools` folder:
-
-[source,csharp]
-----
-public class NotifyPropertyChanged : INotifyPropertyChanged
-{
-    public event PropertyChangedEventHandler PropertyChanged;
-
-    public void OnPropertyChanged([CallerMemberName] string propertyName = null)
-        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-
-    protected void SetProperty<T>(ref T dest, T val, [CallerMemberName] string propertyName = null)
-        where T : IComparable<T>
-    {
-        if (dest.CompareTo(val) != 0) { dest = val; OnPropertyChanged(propertyName); }
-    }
-}
-
-public class BaseViewModel : NotifyPropertyChanged { }
-
-public class DelegateCommand : ICommand
-{
-    private readonly Action _command;
-    private readonly Func<bool> _canExecute;
-
-    public event EventHandler CanExecuteChanged
-    {
-        add => CommandManager.RequerySuggested += value;   // WPF re-checks CanExecute automatically
-        remove => CommandManager.RequerySuggested -= value;
-    }
-
-    public DelegateCommand(Action command, Func<bool> canExecute = null)
-    {
-        _canExecute = canExecute;
-        _command = command ?? throw new ArgumentNullException();
-    }
-
-    public void Execute(object parameter) => _command();
-    public bool CanExecute(object parameter) => _canExecute == null || _canExecute();
-}
-----
-
-*ViewModel pattern from the course (`Style3`):*
-
-[source,csharp]
-----
-public class MainWindowViewModel : BaseViewModel
-{
-    #region Properties
-    private int _currentValue = 1;
-    public int CurrentValue
-    {
-        get => _currentValue;
-        set
-        {
-            SetProperty(ref _currentValue, value);
-            OnPropertyChanged(nameof(IsCurrentValuePrim));   // notify the dependent property too
-        }
-    }
-    public bool IsCurrentValuePrim => IsPrim(CurrentValue);
-    #endregion
-
-    #region Commands
-    public ICommand IncrementCommand => new DelegateCommand(() => CurrentValue++);
-    #endregion
-}
-----
-
-*Connecting the View to the ViewModel (course style, set in XAML):*
-
-[source,xml]
-----
-<Window xmlns:viewModels="clr-namespace:Style4.ViewModels" ...>
-    <Window.DataContext>
-        <viewModels:MainWindowViewModel />
-    </Window.DataContext>
-    <Button Content="Increment" Command="{Binding IncrementCommand}" />
-</Window>
-----
-
-*Folder structure (`Style4`):* `Models/`, `ViewModels/`, `Views/`, `Tools/`. When `MainWindow` is moved into `Views/`, `App.xaml` needs `StartupUri="/Views/MainWindow.xaml"`.
-
-*Lists:* use `ObservableCollection++<++T++>++` so the UI updates on Add/Remove (`Style4.SomeData`).
-
-==== ++[++Best Practice++]++ Improvements on the course helpers (worth knowing; may be asked)
-
-* `SetProperty` with `where T : IComparable++<++T++>++` fails for reference types and crashes when `dest` is `null`. The standard version is:
-+
-[source,csharp]
-----
-protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string name = null)
-{
-    if (EqualityComparer<T>.Default.Equals(field, value)) return false;
-    field = value;
-    OnPropertyChanged(name);
-    return true;
-}
-----
-* `public ICommand X =++>++ new DelegateCommand(...)` creates a *new command on every read*. It works, but caching it is cleaner: `public ICommand X ++{++ get; }` and assign it in the constructor.
-* A command that needs a parameter (`CommandParameter="++{++Binding}"`, e.g. TicTacToe cells or calculator buttons) needs a `DelegateCommand++<++T++>++` / `Action++<++object++>++` variant:
-+
-[source,csharp]
-----
-public class DelegateCommand<T> : ICommand
-{
-    private readonly Action<T> _execute; private readonly Func<T, bool> _canExecute;
-    public DelegateCommand(Action<T> execute, Func<T, bool> canExecute = null)
-    { _execute = execute ?? throw new ArgumentNullException(nameof(execute)); _canExecute = canExecute; }
-    public event EventHandler CanExecuteChanged
-    { add => CommandManager.RequerySuggested += value; remove => CommandManager.RequerySuggested -= value; }
-    public bool CanExecute(object p) => _canExecute == null || _canExecute((T)p);
-    public void Execute(object p) => _execute((T)p);
-}
-----
-+
-[source,xml]
-----
-<Button Content="7" Command="{Binding DigitCommand}" CommandParameter="7"/>
-----
-* In real projects, *CommunityToolkit.Mvvm* (`++[++ObservableProperty++]++`, `++[++RelayCommand++]++`) generates this boilerplate for you. The course writes it by hand, so do it the course way in the test.
-
-'''''
-
-[[4-styles-and-triggers-kurs]]
-=== 4. Styles and triggers ++[++Kurs++]++
-
-From `Style1`–`Style4`.
-
-[source,xml]
-----
-<Window.Resources>
-    <!-- Implicit style: no x:Key, so it applies to ALL Buttons in this scope -->
-    <Style TargetType="{x:Type Button}">
-        <Setter Property="Background" Value="Yellow" />
-    </Style>
-
-    <!-- Explicit style: has x:Key, so you must reference it -->
-    <Style x:Key="GreenButtonStyle" TargetType="{x:Type Button}">
-        <Setter Property="Background" Value="Green" />
-    </Style>
-</Window.Resources>
-
-<Button Style="{StaticResource GreenButtonStyle}" Content="Green" />
-<Button Content="Yellow" />
-----
-
-* *Scope:* `Application.Resources` in App.xaml applies app-wide. `Window.Resources` applies only to that window. The closest scope wins.
-* *`BasedOn`* extends a style instead of replacing it (`Style2`). The window's implicit Button style would otherwise _hide_ the app-level one:
-+
-[source,xml]
-----
-<Style TargetType="{x:Type Button}" BasedOn="{StaticResource {x:Type Button}}">
-    <Setter Property="Foreground" Value="Red" />
-</Style>
-----
-+
-Result: yellow background (from App) {plus} red text (from Window).
-* *Setting a `Style=` explicitly* turns off the implicit style for that element. In `Style4`, `GreenButtonStyle` has no `BasedOn`, so a button using it is _not_ red.
-* *DataTrigger* (`Style3`) changes a setter based on a ViewModel value:
-+
-[source,xml]
-----
-<Style TargetType="Label">
-    <Setter Property="Foreground" Value="Black"/>
-    <Style.Triggers>
-        <DataTrigger Binding="{Binding IsCurrentValuePrim}" Value="true">
-            <Setter Property="Foreground" Value="Green"/>
-        </DataTrigger>
-        <DataTrigger Binding="{Binding CurrentValue}" Value="2">
-            <Setter Property="Foreground" Value="Red"/>
-        </DataTrigger>
-    </Style.Triggers>
-</Style>
-----
-+
-If several triggers match, *the later one wins* (2 is prime, but it shows red).
-* ++[++Best Practice++]++ *Property `Trigger`* reacts to the control's own property instead of data: `++<++Trigger Property="IsMouseOver" Value="True"++>++`. *MultiDataTrigger* requires several conditions at once.
-
-'''''
-
-[[5-itemscontrol-and-datatemplate-kurs]]
-=== 5. ItemsControl and DataTemplate ++[++Kurs++]++
-
-From `Style4`.
-
-[source,xml]
-----
-<ItemsControl ItemsSource="{Binding SomeData}">
-    <ItemsControl.ItemTemplate>
-        <DataTemplate>                         <!-- DataContext here = one MyData item -->
-            <Border Style="{StaticResource MyDataStyle}">
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="{Binding MyName}" Style="{StaticResource LetterTextBlockStyle}"/>
-                    <TextBlock Text="{Binding MyInt}"  Style="{StaticResource LetterTextBlockStyle}"/>
-                </StackPanel>
-            </Border>
-        </DataTemplate>
-    </ItemsControl.ItemTemplate>
-</ItemsControl>
-----
-
-A DataTrigger inside an item style binds to the *item*: `Binding="++{++Binding MyName}" Value="Welt"` turns that row red.
-
-++[++Best Practice++]++ Related points:
-
-* `ListBox`/`ListView`/`DataGrid` add selection on top: `SelectedItem="++{++Binding SelectedMatch}"`.
-* Use `ItemsPanel` to change the layout, e.g. TicTacToe as a 3×3 grid:
-+
-[source,xml]
-----
-<ItemsControl ItemsSource="{Binding Cells}">
-    <ItemsControl.ItemsPanel>
-        <ItemsPanelTemplate><UniformGrid Rows="3" Columns="3"/></ItemsPanelTemplate>
-    </ItemsControl.ItemsPanel>
-    <ItemsControl.ItemTemplate>
-        <DataTemplate>
-            <Button Content="{Binding Symbol}"
-                    Command="{Binding DataContext.CellClickCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                    CommandParameter="{Binding}"/>
-        </DataTemplate>
-    </ItemsControl.ItemTemplate>
-</ItemsControl>
-----
-+
-The `RelativeSource` binding reaches the *window's ViewModel* from inside an item template, where `DataContext` is the item.
-* *Canvas as ItemsPanel* (useful for Turtle or any drawing). Position items with `ItemContainerStyle`:
-+
-[source,xml]
-----
-<ItemsControl ItemsSource="{Binding Lines}">
-    <ItemsControl.ItemsPanel>
-        <ItemsPanelTemplate><Canvas/></ItemsPanelTemplate>
-    </ItemsControl.ItemsPanel>
-    <ItemsControl.ItemTemplate>
-        <DataTemplate>
-            <Line X1="{Binding X1}" Y1="{Binding Y1}" X2="{Binding X2}" Y2="{Binding Y2}"
-                  Stroke="Black" StrokeThickness="2"/>
-        </DataTemplate>
-    </ItemsControl.ItemTemplate>
-</ItemsControl>
-----
-
-'''''
-
-[[6-async-in-wpf-best-practice]]
-=== 6. Async in WPF ++[++Best Practice++]++
-
-For assignment 06 "FindInFileAsync". There is no demo code for this, so these are standard patterns.
-
-* *Never block the UI thread.* Don't call `.Result` or `.Wait()`, and don't do long loops directly in a command.
-* Make `Execute` an `async` method, and keep `async void` only at the outermost layer (event handler / command):
-+
-[source,csharp]
-----
-public class AsyncDelegateCommand : ICommand
-{
-    private readonly Func<Task> _execute; private readonly Func<bool> _canExecute;
-    private bool _isRunning;
-    public AsyncDelegateCommand(Func<Task> execute, Func<bool> canExecute = null)
-    { _execute = execute; _canExecute = canExecute; }
-    public event EventHandler CanExecuteChanged
-    { add => CommandManager.RequerySuggested += value; remove => CommandManager.RequerySuggested -= value; }
-    public bool CanExecute(object p) => !_isRunning && (_canExecute?.Invoke() ?? true);
-    public async void Execute(object p)
-    {
-        _isRunning = true; CommandManager.InvalidateRequerySuggested();
-        try { await _execute(); }
-        finally { _isRunning = false; CommandManager.InvalidateRequerySuggested(); }
-    }
-}
-----
-* Run CPU or file work with `Task.Run` or real async I/O (`File.ReadAllLinesAsync`, `StreamReader.ReadLineAsync`). Report progress with `IProgress++<++T++>++` (it posts back to the UI thread by itself), and support cancelling with a `CancellationToken`:
-+
-[source,csharp]
-----
-public ObservableCollection<string> Results { get; } = new();
-private CancellationTokenSource _cts;
-
-private async Task SearchAsync()
-{
-    _cts = new CancellationTokenSource();
-    Results.Clear();
-    var progress = new Progress<string>(hit => Results.Add(hit));   // runs on the UI thread
-    try
-    {
-        await Task.Run(() => Search(Folder, SearchText, progress, _cts.Token), _cts.Token);
-        Status = "Done";
-    }
-    catch (OperationCanceledException) { Status = "Cancelled"; }
-}
-
-private static void Search(string folder, string text, IProgress<string> progress, CancellationToken ct)
-{
-    foreach (var file in Directory.EnumerateFiles(folder, "*.*", SearchOption.AllDirectories))
-    {
-        ct.ThrowIfCancellationRequested();
-        int lineNo = 0;
-        foreach (var line in File.ReadLines(file))
-        {
-            lineNo++;
-            if (line.Contains(text, StringComparison.OrdinalIgnoreCase))
-                progress.Report($"{file}:{lineNo}: {line.Trim()}");
-        }
-    }
-}
-
-public ICommand CancelCommand => new DelegateCommand(() => _cts?.Cancel(), () => _cts is { IsCancellationRequested: false });
-----
-* After an `await`, code continues *on the UI thread* (WPF has a SynchronizationContext), so updating bound properties there is safe. Inside `Task.Run` it is not safe: modifying an `ObservableCollection` there throws _"This type of CollectionView does not support changes … from a thread different from the Dispatcher thread"_. Use `IProgress++<++T++>++` or `Application.Current.Dispatcher.Invoke(...)` instead.
-* For periodic UI updates (e.g. a SoccerMatchTicker simulation), use `DispatcherTimer`, which ticks on the UI thread:
-+
-[source,csharp]
-----
-var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-timer.Tick += (_, _) => Minute++;
-timer.Start();
-----
-
-'''''
-
-[[7-other-topics-likely-to-come-up-best-practice]]
-=== 7. Other topics likely to come up ++[++Best Practice++]++
-
-* *Value converter:* turn a bound value into another type, e.g. bool → Visibility.
-+
-[source,csharp]
-----
-public class BoolToVisibilityConverter : IValueConverter
-{
-    public object Convert(object value, Type t, object p, CultureInfo c)
-        => value is true ? Visibility.Visible : Visibility.Collapsed;
-    public object ConvertBack(object value, Type t, object p, CultureInfo c)
-        => value is Visibility.Visible;
-}
-----
-+
-[source,xml]
-----
-<Window.Resources><local:BoolToVisibilityConverter x:Key="BoolToVis"/></Window.Resources>
-<TextBlock Visibility="{Binding IsWinner, Converter={StaticResource BoolToVis}}"/>
-----
-+
-WPF also ships a built-in `BooleanToVisibilityConverter`.
-* *StringFormat:* `Text="++{++Binding Score, StringFormat='Score: ++{++0}'}"`, `++{++Binding Price, StringFormat=C}`.
-* *StaticResource vs. DynamicResource:* Static is resolved once at load time. Dynamic is resolved again when the resource changes (useful for themes).
-* *Code-behind vs. MVVM:* the XAML section uses `Click` handlers (LayoutSample). In MVVM the code-behind contains only `InitializeComponent()`, and logic goes in the ViewModel and is bound through `Command`.
-* *`Show()` vs. `ShowDialog()`:* `ShowDialog()` is modal. It blocks the owner window and returns `bool?` (`DialogResult`). The course demos use `ShowDialog()`.
-* *Dependent properties:* if property B is computed from A, raise `OnPropertyChanged(nameof(B))` in A's setter (course: `IsCurrentValuePrim`).
-
-'''''
-
-=== Q&A log
-
-Questions asked in this session go below, with the source (++[++Kurs++]++ course / ++[++Best Practice++]++ best practice).
-
-==== Q1: How do I create a simple TextBox and a Button I can react to?
-
-There are two ways, and both appear in the course.
-
-[[variant-a-mvvm-with-binding--command-kurs-course-style-from-style3-preferred]]
-===== Variant A: MVVM with Binding {plus} Command ++[++Kurs++]++ (course style from `Style3`, preferred)
-
-This version is *self-contained, with no helper classes*. The ViewModel implements `INotifyPropertyChanged` itself, and the command implements `ICommand` itself. This is the plumbing that the course's `Tools/` classes (`NotifyPropertyChanged`, `BaseViewModel`, `DelegateCommand`, see section 3) later pull out so it can be reused.
-
-*`ViewModels/MainWindowViewModel.cs`*
-
-[source,csharp]
-----
-using System;
-using System.ComponentModel;
-using System.Windows.Input;
-
-namespace MyApp.ViewModels;
-
-public class MainWindowViewModel : INotifyPropertyChanged
-{
-    // 1) The event the UI subscribes to. Raising it means "re-read this property".
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    private void OnPropertyChanged(string propertyName)
-        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-
-    // 2) Properties with a backing field. The setter raises PropertyChanged.
-    private string _name = "";
-    public string Name
-    {
-        get => _name;
-        set
-        {
-            if (_name == value) return;
-            _name = value;
-            OnPropertyChanged(nameof(Name));
-        }
-    }
-
-    private string _greeting = "";
-    public string Greeting
-    {
-        get => _greeting;
-        set
-        {
-            if (_greeting == value) return;
-            _greeting = value;
-            OnPropertyChanged(nameof(Greeting));
-        }
-    }
-
-    // 3) The command the Button binds to
-    public ICommand GreetCommand { get; }
-
-    public MainWindowViewModel()
-    {
-        GreetCommand = new GreetCommandImpl(this);
-    }
-
-    // What happens on click
-    private void Greet() => Greeting = $"Hello {Name}!";
-
-    // 4) A minimal ICommand, written out by hand
-    private class GreetCommandImpl : ICommand
-    {
-        private readonly MainWindowViewModel _vm;
-        public GreetCommandImpl(MainWindowViewModel vm) => _vm = vm;
-
-        // Button is disabled while the TextBox is empty
-        public bool CanExecute(object? parameter) => !string.IsNullOrWhiteSpace(_vm.Name);
-
-        public void Execute(object? parameter) => _vm.Greet();
-
-        // WPF calls CanExecute again whenever CommandManager thinks something changed (input, focus, ...)
-        public event EventHandler? CanExecuteChanged
-        {
-            add => CommandManager.RequerySuggested += value;
-            remove => CommandManager.RequerySuggested -= value;
-        }
-    }
-}
-----
-
-The four parts: (1) the `PropertyChanged` event, (2) properties that raise it, (3) an `ICommand` property, (4) the command class. Once you've written this by hand, the course helpers just do the same thing reusably: `NotifyPropertyChanged` replaces part 1, and `DelegateCommand` replaces part 4 with a lambda.
-
-*`Views/MainWindow.xaml`*
-
-[source,xml]
-----
-<Window x:Class="MyApp.Views.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:viewModels="clr-namespace:MyApp.ViewModels"
-        Title="MainWindow" Height="200" Width="300">
-
-    <Window.DataContext>
-        <viewModels:MainWindowViewModel />
-    </Window.DataContext>
-
-    <StackPanel Margin="10">
-        <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
-        <Button Content="Greet" Command="{Binding GreetCommand}" />
-        <TextBlock Text="{Binding Greeting}" Margin="0,10,0,0" FontSize="16"/>
-    </StackPanel>
-</Window>
-----
-
-How it works:
-
-* `Text="++{++Binding Name}"` is *TwoWay* by default for a TextBox, so typing writes into `Name`.
-* `UpdateSourceTrigger=PropertyChanged` makes it update on every key press. The default `LostFocus` would update `Name` only when the TextBox loses focus, so the button would stay disabled while you type.
-* `Command="++{++Binding GreetCommand}"` runs the lambda when the button is clicked. `CanExecute` enables or disables the button automatically through `CommandManager.RequerySuggested`.
-* Setting `Greeting` raises `PropertyChanged`, so the `TextBlock` updates.
-* The code-behind stays empty except for `InitializeComponent()`.
-* Without `PropertyChanged`, the binding still _writes_ into `Name`, but the `TextBlock` would never show the new `Greeting`.
-
-===== Variant B: code-behind with a Click event ++[++Kurs++]++ (XAML section, `LayoutSample`)
-
-Quick and simple, but *not MVVM*.
-
-[source,xml]
-----
-<StackPanel Margin="10">
-    <TextBox x:Name="NameTextBox" />
-    <Button Content="Greet" Click="GreetButton_Click" />
-    <TextBlock x:Name="ResultTextBlock" />
-</StackPanel>
-----
-
-[source,csharp]
-----
-private void GreetButton_Click(object sender, RoutedEventArgs e)
-{
-    ResultTextBlock.Text = $"Hello {NameTextBox.Text}!";
-}
-----
-
-`x:Name` creates a field you can access in `MainWindow.xaml.cs`.
-
-++[++Best Practice++]++ *Which to use:* variant A for the assignments and LF1, since the course has used MVVM since the "WPF - MVVM" section. Variant B is fine for quick tests only.
-
-==== Q2: Aufbau von `ICommand` (auf Deutsch)
-
-`ICommand` (Namespace `System.Windows.Input`) ist ein Interface mit *drei Mitgliedern*:
-
-[source,csharp]
-----
-public interface ICommand
-{
-    void Execute(object? parameter);          // WAS passiert beim Klick
-    bool CanExecute(object? parameter);       // DARF geklickt werden? (Button aktiv/inaktiv)
-    event EventHandler? CanExecuteChanged;    // "Bitte CanExecute neu prüfen!"
-}
-----
-
-[cols=",,",options="header",]
-|===
-|Mitglied |Aufgabe |Wer ruft es auf?
-|`Execute(parameter)` |Führt die eigentliche Aktion aus, z. B. `Greeting = $"Hallo ++{++Name}!"` |WPF, wenn der Button geklickt wird
-|`CanExecute(parameter)` |Gibt `true`/`false` zurück. Bei `false` wird der Button automatisch *ausgegraut* (`IsEnabled = false`). |WPF, beim Binden und jedes Mal, wenn `CanExecuteChanged` ausgelöst wird
-|`CanExecuteChanged` |Event, das dem Button sagt: „Die Bedingung könnte sich geändert haben, ruf `CanExecute` nochmal auf.“ |Der Button abonniert es, dein Code (oder der `CommandManager`) löst es aus
-|===
-
-*`parameter`* ist der Wert aus `CommandParameter="..."` in XAML, z. B. `CommandParameter="7"` bei einem Taschenrechner-Button. Ohne `CommandParameter` ist er `null`.
-
-*Ablauf:*
-
-[arabic]
-. Das Fenster lädt. Der Button bindet sich an `GreetCommand`, abonniert `CanExecuteChanged` und ruft einmal `CanExecute` auf. Das Textfeld ist leer, also `false` und der Button ist ausgegraut.
-. Der Benutzer tippt. Der `CommandManager` merkt die Eingabe und löst `RequerySuggested` aus, und damit unser `CanExecuteChanged`. Der Button ruft `CanExecute` erneut auf, bekommt `true` und wird aktiv.
-. Der Benutzer klickt. WPF ruft `Execute` auf und die Aktion läuft.
-
-*Warum `CommandManager.RequerySuggested`?*
-
-[source,csharp]
-----
-public event EventHandler? CanExecuteChanged
-{
-    add => CommandManager.RequerySuggested += value;
-    remove => CommandManager.RequerySuggested -= value;
-}
-----
-
-Statt das Event selbst auszulösen, leiten wir die Anmeldung an den `CommandManager` weiter. Der löst `RequerySuggested` bei jeder Benutzereingabe aus (Tastendruck, Mausklick, Fokuswechsel). So aktualisiert sich der Button *automatisch*. Ändert sich die Bedingung ohne Benutzereingabe (z. B. durch einen Timer oder nach einem `await`), musst du selbst `CommandManager.InvalidateRequerySuggested()` aufrufen.
-
-*Alternative ohne CommandManager:* ein eigenes Event, das du manuell auslöst:
-
-[source,csharp]
-----
-public event EventHandler? CanExecuteChanged;
-public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
-// z. B. im Setter von Name aufrufen
-----
-
-*Bezug zum Kurs:* Die Klasse `DelegateCommand` aus `Tools/` ist genau diese Struktur, nur wiederverwendbar. `Execute` ruft ein übergebenes `Action` auf, und `CanExecute` ruft ein übergebenes `Func++<++bool++>++` auf (oder liefert `true`, wenn keins übergeben wurde).
-
-==== Q3: Brauche ich für jeden Button eine eigene Klasse, die `ICommand` implementiert?
-
-*Nein.* Du schreibst *eine* allgemeine Command-Klasse und übergibst ihr im Konstruktor, _was_ sie tun soll, als Delegate (`Action`, `Func++<++bool++>++`). Pro Button erzeugst du dann nur ein *Objekt* davon, keine neue Klasse.
-
-Genau dafür gibt es im Kurs `DelegateCommand` ++[++Kurs++]++ (in anderen Projekten oft `RelayCommand` genannt):
-
-[source,csharp]
-----
-public class DelegateCommand : ICommand
-{
-    private readonly Action _execute;          // was beim Klick passiert
-    private readonly Func<bool>? _canExecute;  // darf geklickt werden? (optional)
-
-    public DelegateCommand(Action execute, Func<bool>? canExecute = null)
-    {
-        _execute = execute ?? throw new ArgumentNullException(nameof(execute));
-        _canExecute = canExecute;
-    }
-
-    public void Execute(object? parameter) => _execute();
-    public bool CanExecute(object? parameter) => _canExecute == null || _canExecute();
-
-    public event EventHandler? CanExecuteChanged
-    {
-        add => CommandManager.RequerySuggested += value;
-        remove => CommandManager.RequerySuggested -= value;
-    }
-}
-----
-
-*Verwendung, eine Klasse für beliebig viele Buttons:*
-
-[source,csharp]
-----
-public ICommand GreetCommand { get; }
-public ICommand ClearCommand { get; }
-public ICommand ExitCommand  { get; }
-
-public MainWindowViewModel()
-{
-    GreetCommand = new DelegateCommand(Greet, () => !string.IsNullOrWhiteSpace(Name));
-    ClearCommand = new DelegateCommand(() => { Name = ""; Greeting = ""; });
-    ExitCommand  = new DelegateCommand(() => Application.Current.Shutdown());
-}
-
-private void Greet() => Greeting = $"Hallo {Name}!";
-----
-
-*Viele gleichartige Buttons* (z. B. Ziffern 0–9 beim Taschenrechner) brauchen nicht einmal mehrere Commands. Ein Command mit Parameter reicht (siehe `DelegateCommand++<++T++>++` in Abschnitt 3):
-
-[source,csharp]
-----
-public ICommand DigitCommand { get; }
-// im Konstruktor:
-DigitCommand = new DelegateCommand<string>(digit => Display += digit);
-----
-
-[source,xml]
-----
-<Button Content="7" Command="{Binding DigitCommand}" CommandParameter="7"/>
-<Button Content="8" Command="{Binding DigitCommand}" CommandParameter="8"/>
-----
-
-Die eigene Klasse pro Button (Q1/Q2) dient nur zum *Verstehen* des Interfaces. In der Praxis und im Test verwendest du `DelegateCommand`.
-
-==== Q4: Wie gebe ich einer `Action` einen Parameter mit?
-
-*Grundlagen ++[++Best Practice++]++:* Die Parameter-Typen stehen in spitzen Klammern:
-
-[cols=",,",options="header",]
-|===
-|Delegate |Signatur |Beispiel
-|`Action` |`void M()` |`Action a = () =++>++ Count{plus}{plus};`
-|`Action++<++T++>++` |`void M(T x)` |`Action++<++string++>++ a = s =++>++ Display {plus}= s;`
-|`Action++<++T1, T2++>++` |`void M(T1 x, T2 y)` |`Action++<++int, int++>++ a = (x, y) =++>++ Sum = x {plus} y;`
-|`Func++<++TResult++>++` |`TResult M()` |`Func++<++bool++>++ f = () =++>++ Name != "";`
-|`Func++<++T, TResult++>++` |`TResult M(T x)` (*letzter* Typ = Rückgabe) |`Func++<++string, bool++>++ f = s =++>++ s.Length ++>++ 0;`
-|===
-
-Aufruf: `a("7");` oder `a.Invoke("7");`
-
-*Im Command:* Der Wert kommt aus `CommandParameter` in XAML. WPF übergibt ihn an `Execute(object? parameter)`, und der Command reicht ihn an die `Action++<++T++>++` weiter.
-
-*Variante 1: generischer `DelegateCommand++<++T++>++` (empfohlen)*
-
-[source,csharp]
-----
-public class DelegateCommand<T> : ICommand
-{
-    private readonly Action<T> _execute;
-    private readonly Func<T, bool>? _canExecute;
-
-    public DelegateCommand(Action<T> execute, Func<T, bool>? canExecute = null)
-    {
-        _execute = execute ?? throw new ArgumentNullException(nameof(execute));
-        _canExecute = canExecute;
-    }
-
-    public void Execute(object? parameter) => _execute((T)parameter!);
-    public bool CanExecute(object? parameter) => _canExecute == null || _canExecute((T)parameter!);
-
-    public event EventHandler? CanExecuteChanged
-    {
-        add => CommandManager.RequerySuggested += value;
-        remove => CommandManager.RequerySuggested -= value;
-    }
-}
-----
-
-[source,csharp]
-----
-public ICommand DigitCommand { get; }
-// im Konstruktor:
-DigitCommand = new DelegateCommand<string>(digit => Display += digit);
-----
-
-[source,xml]
-----
-<Button Content="7" Command="{Binding DigitCommand}" CommandParameter="7"/>
-----
-
-*Variante 2: nicht-generisch mit `Action++<++object?++>++`*, falls nur eine Klasse gewünscht ist:
-
-[source,csharp]
-----
-public DelegateCommand(Action<object?> execute, Func<object?, bool>? canExecute = null) { ... }
-public void Execute(object? parameter) => _execute(parameter);
-----
-
-[source,csharp]
-----
-DigitCommand = new DelegateCommand(p => Display += (string)p!);   // selbst casten
-----
-
-*Variante 3: ohne Parameter, Wert per Lambda „einfangen“ (Closure)*, z. B. wenn Commands im Code erzeugt werden:
-
-[source,csharp]
-----
-foreach (var cell in Cells)
-    cell.ClickCommand = new DelegateCommand(() => Play(cell));   // cell wird im Lambda gemerkt
-----
-
-*Achtung, Typ des Parameters:*
-
-* `CommandParameter="7"` in XAML ist immer ein *`string`*, nicht `int`. Verwende `DelegateCommand++<++string++>++` und dann `int.Parse(digit)`. Ein `(int)`-Cast würde eine `InvalidCastException` werfen.
-* `CommandParameter="++{++Binding}"` übergibt das gebundene Objekt (z. B. das Item in einem `ItemsControl`), dann `DelegateCommand++<++Cell++>++`.
-* Ohne `CommandParameter` ist der Parameter `null`. Bei Werttypen wie `DelegateCommand++<++int++>++` führt das zu einer `NullReferenceException` beim Cast.
-
-==== Q5: Kann ich `new DelegateCommand++<++void++>++` verwenden, wenn ich keinen Parameter habe?
-
-*Nein.* `void` ist in C# kein Typ, den man als generisches Argument verwenden darf. Der Compiler meldet den Fehler *CS1547*: _„Keyword 'void' cannot be used in this context“_. Deshalb gibt es auch zwei getrennte Delegate-Familien: `Action`/`Action++<++T++>++` (ohne Rückgabe) und `Func++<++…++>++` (mit Rückgabe). Ein `Func++<++void++>++` gibt es nicht.
-
-*Lösung:* Behalte *beide Klassen*, die nicht-generische und die generische. Sie dürfen *gleich heißen*, weil C# Klassen mit unterschiedlich vielen Typparametern als verschiedene Typen behandelt (wie `Action` und `Action++<++T++>++`):
-
-[source,csharp]
-----
-public class DelegateCommand : ICommand     { /* Action,    Func<bool>    */ }
-public class DelegateCommand<T> : ICommand  { /* Action<T>, Func<T, bool> */ }
-----
-
-[source,csharp]
-----
-ClearCommand = new DelegateCommand(() => Display = "");                 // kein Parameter
-DigitCommand = new DelegateCommand<string>(d => Display += d);          // mit Parameter
-----
-
-Da zwei Dateien nicht beide `DelegateCommand.cs` heißen können, legst du entweder beide Klassen in `DelegateCommand.cs` ab oder nennst die generische Datei `DelegateCommandOfT.cs` bzw. `DelegateCommand++`++1.cs` (übliche Konvention).
-
-*Notlösung:* `DelegateCommand++<++object?++>++` verwenden und den Parameter ignorieren:
-
-[source,csharp]
-----
-ClearCommand = new DelegateCommand<object?>(_ => Display = "");   // _ = "Parameter wird nicht gebraucht"
-----
-
-Das funktioniert, ist aber unschöner als die nicht-generische Klasse.
-
-[[q6-was-macht-public-mainwindowviewmodel--greetcommand--new-greetcommandimplthis-und-wie-geht-das-mit-delegatecommand]]
-==== Q6: Was macht `public MainWindowViewModel() =++>++ GreetCommand = new GreetCommandImpl(this);` und wie geht das mit `DelegateCommand`?
-
-*Was die Zeile macht:*
-
-* Sie ist der *Konstruktor* des ViewModels, in Kurzschreibweise (expression-bodied, `=++>++` statt `++{++ }`). Ausgeschrieben:
-+
-[source,csharp]
-----
-public MainWindowViewModel()
-{
-    GreetCommand = new GreetCommandImpl(this);
-}
-----
-* Sie erzeugt *ein Objekt* der Command-Klasse und speichert es in der Property `GreetCommand`, an die der Button bindet.
-* *`this`* ist das aktuelle ViewModel-Objekt. Es wird übergeben, weil `GreetCommandImpl` eine *eigene Klasse* ist und sonst keinen Zugriff auf `Name` und `Greet()` hätte. Der Command speichert es in `++_++vm` und ruft dann `++_++vm.Name` bzw. `++_++vm.Greet()` auf.
-
-*Mit `DelegateCommand`* fällt die Klasse `GreetCommandImpl` komplett weg, und `this` muss nicht übergeben werden. Ein Lambda bzw. eine Methodenreferenz, die *im ViewModel* geschrieben ist, hat ohnehin Zugriff auf alle Members:
-
-[source,csharp]
-----
-public MainWindowViewModel()
-{
-    GreetCommand = new DelegateCommand(
-        Greet,                                     // Execute: Methodenreferenz (ohne Klammern!)
-        () => !string.IsNullOrWhiteSpace(Name));   // CanExecute: Lambda
-}
-
-private void Greet() => Greeting = $"Hallo {Name}!";
-----
-
-Vergleich:
-
-[cols=",",options="header",]
-|===
-|Eigene Klasse (`GreetCommandImpl`) |`DelegateCommand`
-|`Execute(...) =++>++ ++_++vm.Greet();` |1. Argument: `Greet`
-|`CanExecute(...) =++>++ !string.IsNullOrWhiteSpace(++_++vm.Name);` |2. Argument: `() =++>++ !string.IsNullOrWhiteSpace(Name)`
-|braucht `this`, um aufs ViewModel zuzugreifen |Lambda „fängt“ `this` automatisch ein (Closure)
-|===
-
-Einzeilig geht es auch wieder:
-
-[source,csharp]
-----
-public MainWindowViewModel() => GreetCommand = new DelegateCommand(Greet, () => !string.IsNullOrWhiteSpace(Name));
-----
-
-Achtung: `Greet` *ohne* Klammern übergibt die Methode. `Greet()` würde sie sofort aufrufen und deren Rückgabewert (`void`) übergeben, was ein Compilerfehler ist.
-
-==== Q7: How do I set the DataContext correctly in XAML? ++[++Kurs++]++ (course style, `Style3`/`Style4`)
-
-Two steps: *(1) map the C# namespace to an XML prefix*, *(2) create the ViewModel as the window's DataContext.*
-
-[source,csharp]
-----
-// ViewModels/MainWindowViewModel.cs
-namespace MyApp.ViewModels;            // <- this namespace...
-
-public class MainWindowViewModel { ... }   // public, parameterless constructor
-----
-
-[source,xml]
-----
-<Window x:Class="MyApp.Views.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:viewModels="clr-namespace:MyApp.ViewModels"
-        Title="MainWindow" Height="200" Width="300">
-        <!--  ^ prefix (any name)      ^ ...goes here, exactly as in C#  -->
-
-    <Window.DataContext>
-        <viewModels:MainWindowViewModel />    <!-- prefix:ClassName -->
-    </Window.DataContext>
-
-    <StackPanel>
-        <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
-        <Button Content="Greet" Command="{Binding GreetCommand}" />
-    </StackPanel>
-</Window>
-----
-
-How it works:
-
-* `++<++viewModels:MainWindowViewModel /++>++` makes WPF call `new MainWindowViewModel()` when the window loads.
-* The DataContext is *inherited* by all child elements, so every `++{++Binding X}` inside the window looks for property `X` on that ViewModel.
-* In course `Style3` the ViewModel is in the root namespace, so it's `xmlns:style3="clr-namespace:Style3"`. In `Style4` it's `clr-namespace:Style4.ViewModels`.
-
-*Common mistakes:* ++|++ Symptom ++|++ Cause / fix ++|++ ++|++---++|++---++|++ ++|++ _"The name 'MainWindowViewModel' does not exist in the namespace 'clr-namespace:…'"_ ++|++ Namespace in `xmlns` doesn't match the C# `namespace` exactly (case-sensitive), *or the project hasn't been built yet*. Build once (Ctrl{plus}Shift{plus}B), and the designer error usually disappears. ++|++ ++|++ ViewModel is in another project (class library) ++|++ `xmlns:vm="clr-namespace:MyApp.ViewModels;assembly=MyApp.Core"` ++|++ ++|++ Error creating the instance ++|++ The class must be `public` and have a *public parameterless constructor*. ++|++ ++|++ Bindings show nothing, no error ++|++ Property is not `public`, the name is misspelled, or `PropertyChanged` isn't raised. Check the *Output window* in Visual Studio for `System.Windows.Data Error: 40 … property not found`. ++|++ ++|++ Window moved to `Views/` and the app won't start ++|++ Update `StartupUri="/Views/MainWindow.xaml"` in `App.xaml` (course `Style4`). ++|++ ++|++ DataContext set twice ++|++ Don't also set `DataContext = new …()` in code-behind. One place only. ++|++
-
-____
-*Real-world note (happened in practice):* XAML was `xmlns:vm="clr-namespace:testing.ViewModel"` with `++<++vm:MainWindowViewModel /++>++`, which was 100 % correct, but the designer still said _"MainWindowViewModel does not exist in the namespace clr-namespace:testing.ViewModel"_. *Fix: build the project (Ctrl{plus}Shift{plus}B).* The XAML designer only sees classes from the last _successful_ build, so a newly written ViewModel is unknown until you build. If building doesn't fix it:
-
-[arabic]
-. Open the *Error List*. Any C# compile error elsewhere (missing `using System.ComponentModel;`, unimplemented `ICommand` member, …) blocks the build and causes this XAML error as a side effect.
-. Check upper/lower case: `ViewModel` ≠ `Viewmodel`.
-. *Clean {plus} Rebuild Solution*, or close VS and delete `bin/` and `obj/`.
-____
-
-++[++Best Practice++]++ *Alternatives:*
-
-* In code-behind (needed when the ViewModel's constructor takes parameters, e.g. services):
-+
-[source,csharp]
-----
-public MainWindow()
-{
-    InitializeComponent();
-    DataContext = new MainWindowViewModel();
-}
-----
-* Design-time only (IntelliSense for bindings, no instance at runtime):
-+
-[source,xml]
-----
-xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-mc:Ignorable="d"
-d:DataContext="{d:DesignInstance Type=viewModels:MainWindowViewModel}"
-----
-* To access the ViewModel from code-behind when it was created in XAML: `var vm = (MainWindowViewModel)DataContext;`
-
-==== Q8: Bug in my own `DelegateCommand`, NullReferenceException in `CanExecute`
-
-Wrong:
-
-[source,csharp]
-----
-public bool CanExecute(object? parameter) => _canExecute() == null || _canExecute();
-//                                                     ^^ calls the delegate!
-----
-
-`++_++canExecute()` *calls* the function. If no `canExecute` was passed, `++_++canExecute` is `null`, and calling `null` throws a *NullReferenceException* before the `== null` check ever runs. Even when it is set, `bool == null` makes no sense.
-
-Correct: check the *delegate itself* (without `()`) for null:
-
-[source,csharp]
-----
-public bool CanExecute(object? parameter) => _canExecute == null || _canExecute();
-// or shorter:
-public bool CanExecute(object? parameter) => _canExecute?.Invoke() ?? true;
-----
-
-Second problem in the same class: `public event EventHandler? CanExecuteChanged;` is declared but *never raised*, so the button never re-checks `CanExecute` and stays disabled or enabled forever. Fix by forwarding to the `CommandManager`:
-
-[source,csharp]
-----
-public event EventHandler? CanExecuteChanged
-{
-    add => CommandManager.RequerySuggested += value;
-    remove => CommandManager.RequerySuggested -= value;
-}
-----
-
-==== Q9: Button stays disabled while typing, update the ViewModel on every keystroke
-
-Cause: a `TextBox.Text` binding defaults to `UpdateSourceTrigger=LostFocus`. `Name` in the ViewModel is only set when the TextBox *loses focus*. While typing, `Name` is still empty, so `CanExecute` returns `false`.
-
-Fix in XAML:
-
-[source,xml]
-----
-<TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
-<Button Content="Greet" Command="{Binding GreetCommand}" />
-----
-
-Now `Name` is updated on every keystroke. `CommandManager.RequerySuggested` fires after keyboard input, so the button re-checks `CanExecute` and becomes enabled.
-
-Checklist if it still doesn't work:
-
-* `CanExecuteChanged` must forward to `CommandManager.RequerySuggested` (see Q8). A plain `public event EventHandler? CanExecuteChanged;` is never raised.
-* The binding path must match the property name exactly (`Name`, case-sensitive). Watch the Output window for `BindingExpression path error`.
-* `Name` must be a property with a public getter and setter, not a field.
-* Alternative without `CommandManager`: call `GreetCommand.RaiseCanExecuteChanged()` in the `Name` setter (only if your command has that method).
-
-Real-world result: `UpdateSourceTrigger=PropertyChanged` alone did *not* fix it. The cause was the plain `public event EventHandler? CanExecuteChanged;` in the own `DelegateCommand` (VS showed "0 references" above it). It must be replaced with the `CommandManager.RequerySuggested` add/remove version. Both changes are needed.
-
-==== Q10: Three elements side by side (horizontal) in a StackPanel
-
-++[++Kurs++]++ Course (`LayoutSample/StackPanelWindow.xaml`): set `Orientation="Horizontal"`. The default is `Vertical`.
-
-[source,xml]
-----
-<StackPanel Orientation="Horizontal">
-    <Label   Content="Name:" Width="60" />
-    <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="150" Margin="5,0" />
-    <Button  Content="Greet" Command="{Binding GreetCommand}" Padding="10,2" />
-</StackPanel>
-----
-
-* Spacing: give each child a `Margin` (for example `Margin="5,0"`). A WPF StackPanel has no `Spacing` property (unlike WinUI/UWP).
-* Vertical alignment inside the row: `VerticalAlignment="Center"` on the children.
-* Several label/textbox rows: the course nests horizontal StackPanels inside a vertical one, as in the sample. For aligned columns a `Grid` is better.
-* A horizontal StackPanel does *not* stretch children to fill the width. If the TextBox should take the remaining space, use a `DockPanel` (last child fills) or a `Grid` with a `++*++` column instead.
-
-[[q11-soccer-match-ticker-layout-filename--load-separator-team-names]]
-==== Q11: Soccer Match Ticker layout (Filename {plus} Load, separator, team names)
-
-Screenshot shows: a label column (~100 px), "Filename" TextBox {plus} "Load" button, a horizontal line, then "Name of team 1" with a wider TextBox. Built in the course style (vertical StackPanel of horizontal rows, label with fixed width, see Q10):
-
-[source,xml]
-----
-<Window x:Class="SoccerMatchTicker.Views.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:vm="clr-namespace:SoccerMatchTicker.ViewModels"
-        Title="Soccer Match Ticker" Height="450" Width="800">
-    <Window.DataContext>
-        <vm:MainWindowViewModel />
-    </Window.DataContext>
-
-    <StackPanel Margin="5">
-        <!-- Row 1: Filename + Load -->
-        <StackPanel Orientation="Horizontal" Margin="0,2">
-            <Label   Content="Filename" Width="100" />
-            <TextBox Text="{Binding FileName, UpdateSourceTrigger=PropertyChanged}"
-                     Width="320" VerticalContentAlignment="Center" />
-            <Button  Content="Load" Command="{Binding LoadCommand}"
-                     Width="65" Margin="6,0,0,0" />
-        </StackPanel>
-
-        <!-- horizontal line -->
-        <Separator Margin="0,4" />
-
-        <!-- Row 2: team 1 -->
-        <StackPanel Orientation="Horizontal" Margin="0,2">
-            <Label   Content="Name of team 1" Width="100" />
-            <TextBox Text="{Binding Team1Name}" Width="430" IsReadOnly="True" />
-        </StackPanel>
-        <!-- further rows (team 2, score, ...) the same way -->
-    </StackPanel>
-</Window>
-----
-
-* `++<++Separator /++>++` draws the thin horizontal line between the sections.
-* `Width="100"` on every label keeps all TextBoxes aligned in one column. Alternative: a `Grid` with `++<++ColumnDefinition Width="100"/++>++`, which scales better for many rows.
-* `IsReadOnly="True"` if the team names only come from the loaded file. Leave it out if the user types them.
-* ViewModel needs `FileName`, `Team1Name` (with `PropertyChanged`, because they change after Load) and `LoadCommand = new DelegateCommand(Load, () =++>++ !string.IsNullOrWhiteSpace(FileName));`.
-
-[[q12-get-the-base-directory-of-the-app-for-example-to-load-lask-vs-blwtxt]]
-==== Q12: Get the base directory of the app (for example to load `Lask-vs-BLW.txt`)
-
-++[++Best Practice++]++ Use `AppContext.BaseDirectory`. It is the folder of the `.exe`, e.g. `...++\++bin++\++Debug++\++net10.0-windows++\++`.
-
-[source,csharp]
-----
-string baseDir = AppContext.BaseDirectory;
-string path = Path.Combine(baseDir, FileName);   // FileName = "Lask-vs-BLW.txt"
-string[] lines = File.ReadAllLines(path);
-----
-
-[cols=",,",options="header",]
-|===
-|API |Returns |Use it?
-|`AppContext.BaseDirectory` |folder of the exe |recommended
-|`AppDomain.CurrentDomain.BaseDirectory` |same thing (older API) |works
-|`Directory.GetCurrentDirectory()` / `Environment.CurrentDirectory` |the _working_ directory, depends on how the app was started |not reliable
-|===
-
-* Always join paths with `Path.Combine`, never with `{plus} "++\\++"`.
-* The data file must actually be in `bin++\++...`: in Solution Explorer select the file → Properties → *Copy to Output Directory = Copy if newer*. In the `.csproj` that is:
-+
-[source,xml]
-----
-<ItemGroup>
-  <None Update="Lask-vs-BLW.txt" CopyToOutputDirectory="PreserveNewest" />
-</ItemGroup>
-----
-* Check `File.Exists(path)` before reading and show an error message otherwise.
-
-==== Q13: `XamlParseException` at `InitializeComponent()`: "Provide value on 'TypeConverterMarkupExtension' threw an exception"
-
-The exception is thrown in `InitializeComponent()`, but the *bug is in the XAML*, at the line and position named in the message (here: line 18, position 36 of the window's `.xaml`). WPF could not convert an attribute *string* into the required type.
-
-How to find it:
-
-[arabic]
-. Open the `.xaml` and go to the given line and column (Ctrl{plus}G).
-. Expand *Inner Exception* in the exception popup. It names the real problem (e.g. `IOException: Cannot locate resource 'xyz.png'`, `FormatException`, ...).
-
-Typical causes: ++|++ Attribute ++|++ Problem ++|++ Fix ++|++ ++|++---++|++---++|++---++|++ ++|++ `Icon="..."`, `++<++Image Source="..."/++>++` ++|++ file not found, or not part of the project ++|++ add file to project, Build Action = *Resource*, check the path/case ++|++ ++|++ `Source="pack://..."` / relative path ++|++ wrong path ++|++ e.g. `Source="/Images/ball.png"` (leading `/` = project root) ++|++ ++|++ `StartupUri` / `Source` of a `ResourceDictionary` ++|++ wrong file name or folder ++|++ match the real path (e.g. `/Views/MainWindow.xaml`) ++|++ ++|++ Colors, `Margin`, `Width`, enums ++|++ typo, e.g. `Margin="5;0"`, `Width="10px"`, `HorizontalAlignment="Centre"` ++|++ use valid values (`5,0`, `10`, `Center`) ++|++
-
-Real-world result: line 18 was `++<++Button ... Command="Binding LoadFileCommand"/++>++`. The *curly braces were missing*, so WPF tried to convert the plain string "Binding LoadFileCommand" into an `ICommand` and failed. Fix: `Command="++{++Binding LoadFileCommand}"`. Without `++{++ }` it is a literal string, not a markup extension.
-
-Other things found in the same XAML:
-
-* `++<++TextBlock Text="++{++Binding FileName, ...}"++>++` should be a `++<++TextBox++>++` if the user types the filename. A `TextBlock` only displays text, so `UpdateSourceTrigger` does nothing there.
-* `UpdateSourceTrigger=LostFocus` → use `PropertyChanged` if the Load button's `CanExecute` depends on the text (see Q9).
-* `Margin="0.2"` is one value (0.2 px on every side); `Margin="0,2"` means left/right 0, top/bottom 2.
-
-Side note on `$"++{++AppContext.BaseDirectory}++\\++Lask-vs-BLW.txt"`: `BaseDirectory` already ends with `++\++`, so this produces `++\\++`. Better: `Path.Combine(AppContext.BaseDirectory, "Lask-vs-BLW.txt")` (see Q12).
-
-[[q14-tabelle-mit-spalten-time--event--information-soccer-match-ticker]]
-==== Q14: Tabelle mit Spalten Time / Event / Information (Soccer Match Ticker)
-
-++[++Best Practice++]++ Nicht in den Kursbeispielen, Best Practice: *`DataGrid`* mit eigenen Spalten, gebunden an eine *`ObservableCollection++<++T++>++`* im ViewModel. Die schwarzen Linien im Screenshot sind die Standard-Gitterlinien des DataGrid.
-
-*1. Model*, eine Zeile der Tabelle (`Models/MatchEvent.cs`):
-
-[source,csharp]
-----
-namespace WPFApp.Models;
-
-public class MatchEvent
-{
-    public string Time { get; set; } = "";
-    public string Event { get; set; } = "";
-    public string Information { get; set; } = "";
-}
-----
-
-*2. ViewModel*: Liste als Property, in `LoadFile` befüllen:
-
-[source,csharp]
-----
-using System.Collections.ObjectModel;
-using WPFApp.Models;
-
-public ObservableCollection<MatchEvent> Events { get; } = new();
-
-public void LoadFile()
-{
-    Events.Clear();
-    foreach (string line in File.ReadAllLines(FileName))
-    {
-        // Annahme: eine Zeile = "17';Tor;0:1! Katharina Mayr trifft für LASK."
-        // -> an das echte Dateiformat anpassen!
-        string[] parts = line.Split(';', 3);
-        if (parts.Length < 3) continue;
-
-        Events.Add(new MatchEvent { Time = parts[0], Event = parts[1], Information = parts[2] });
-    }
-}
-----
-
-* `ObservableCollection` meldet `Add`/`Remove`/`Clear` automatisch an die View. Mit einer normalen `List++<++T++>++` sieht man neue Zeilen *nicht*.
-* Die Collection nur *einmal* erzeugen (`++{++ get; } = new()`) und dann `Clear()` {plus} `Add()`. Wenn man sie neu zuweist, braucht man ein `OnPropertyChanged`.
-
-*3. View*:
-
-[source,xml]
-----
-<DataGrid ItemsSource="{Binding Events}"
-          AutoGenerateColumns="False"
-          IsReadOnly="True"
-          CanUserAddRows="False"
-          HeadersVisibility="Column"
-          Margin="0,5,0,0">
-    <DataGrid.Columns>
-        <DataGridTextColumn Header="Time"        Binding="{Binding Time}"        Width="100" />
-        <DataGridTextColumn Header="Event"       Binding="{Binding Event}"       Width="Auto" />
-        <DataGridTextColumn Header="Information" Binding="{Binding Information}" Width="*" />
-    </DataGrid.Columns>
-</DataGrid>
-----
-
-* `AutoGenerateColumns="False"`: nur die selbst definierten Spalten werden angezeigt (eigene Überschriften, Reihenfolge, Breiten).
-* `Width="++*++"`: die letzte Spalte nimmt den restlichen Platz.
-* `HeadersVisibility="Column"` blendet die graue Zeilenkopf-Spalte links aus.
-* Damit das DataGrid den Rest des Fensters füllt und scrollt, das äußere Layout als *`DockPanel`* (Kopfzeilen `DockPanel.Dock="Top"`, DataGrid als letztes Kind) oder als `Grid` mit `Height="++*++"`-Zeile bauen. In einer vertikalen `StackPanel` wächst es unbegrenzt und *scrollt nicht*.
-
-Alternative: `ListView` mit `GridView` (`++<++GridViewColumn Header="Time" DisplayMemberBinding="++{++Binding Time}"/++>++`), schlanker, aber ohne Gitterlinien.
-
-[[q15-stackpanel-dockpaneldockbottom-wird-nicht-angezeigt-dockpanel-reihenfolge]]
-==== Q15: `StackPanel DockPanel.Dock="Bottom"` wird nicht angezeigt (DockPanel-Reihenfolge)
-
-Problem: Im `DockPanel` stand das `DataGrid` *vor* der StackPanel mit `DockPanel.Dock="Bottom"`.
-
-Ein DockPanel verteilt den Platz *in der Reihenfolge der Kinder*:
-
-* Jedes Kind nimmt sich seinen Rand (Top/Bottom/Left/Right; ohne Angabe ist es *Left*).
-* Das *letzte* Kind füllt den Rest (`LastChildFill="True"` ist der Standard). Sein `Dock` wird dabei ignoriert.
-
-Das DataGrid (ohne `Dock`, also Left) hat sich zuerst die ganze Breite genommen. Für die Bottom-StackPanel blieb kein Platz.
-
-Regel: *zuerst alle angedockten Elemente, das füllende Element (DataGrid) als letztes Kind.*
-
-[source,xml]
-----
-<DockPanel Margin="5">
-    <StackPanel DockPanel.Dock="Top">     <!-- Filename, Teams --> </StackPanel>
-    <StackPanel DockPanel.Dock="Bottom">  <!-- Time / Event / Information --> </StackPanel>
-
-    <DataGrid ItemsSource="{Binding Events}" ... />   <!-- LETZTES Kind = füllt den Rest -->
-</DockPanel>
-----
-
-Alternative: ein `Grid` mit `RowDefinitions` `Auto` / `++*++` / `Auto` und `Grid.Row` an jedem Element. Dort ist die Reihenfolge im XAML egal.
-
-==== Q16: Visual Studio 2026 does not find the unit tests (Test Explorer empty)
-
-Test Explorer only lists tests *after a successful build*, and only if the test project has a test SDK {plus} adapter. Work through this list:
-
-[arabic]
-. *Build the solution* (Ctrl{plus}Shift{plus}B), then Test Explorer → Run All. Look at *Output → "Tests"* (dropdown in the Output window); discovery errors are written there.
-. *NuGet restore failed?* If the build output says `Failed to restore ...`, the test packages are missing. Right-click solution → *Restore NuGet Packages*, or delete `bin`/`obj` and rebuild.
-. *Packages in the test `.csproj`* (one framework is enough):
-+
-[source,xml]
-----
-<PropertyGroup>
-  <TargetFramework>net10.0-windows</TargetFramework>
-  <IsPackable>false</IsPackable>
-  <IsTestProject>true</IsTestProject>
-</PropertyGroup>
-<ItemGroup>
-  <PackageReference Include="Microsoft.NET.Test.Sdk" Version="*" />
-  <!-- MSTest -->
-  <PackageReference Include="MSTest.TestAdapter" Version="*" />
-  <PackageReference Include="MSTest.TestFramework" Version="*" />
-  <!-- or xUnit: xunit + xunit.runner.visualstudio -->
-  <!-- or NUnit: NUnit + NUnit3TestAdapter -->
-</ItemGroup>
-----
-+
-(`Version="++*++"` only as a placeholder: keep the versions NuGet installed.) Missing `Microsoft.NET.Test.Sdk` or the adapter means no tests are discovered.
-. *Target framework*: if the test project references the WPF/Logic project that is `net10.0-windows`, the test project must be `net10.0-windows` too (or the referenced project must be plain `net10.0`). A mismatch causes a build error, so no tests appear.
-. *Test code*: class `public` {plus} `++[++TestClass++]++`, method `public void` {plus} `++[++TestMethod++]++` (xUnit: `++[++Fact++]++`, NUnit: `++[++Test++]++`). Not `static`, not `private`, no `async void` (use `async Task`).
-. *Architecture*: Test → Test Explorer → ⚙ Settings → _Processor Architecture for AnyCPU projects_ = *Auto* / x64 to match the projects.
-. Still empty: close VS, delete the hidden *`.vs`* folder next to the `.sln` and all `bin`/`obj`, reopen, rebuild.
-
-Tip: `dotnet test` in the terminal (in the solution folder) shows directly whether the tests are found. If they run there, the problem is only in VS (step 6/7).
+* Designer meldet „MainWindowViewModel existiert nicht im Namespace clr-namespace:...“, obwohl alles stimmt → Projekt bauen
+  (Strg+Umschalt+B). Der XAML-Designer kennt nur Klassen aus dem letzten *erfolgreichen* Build. Hilft das nicht:
+  in der Fehlerliste nach C#-Fehlern suchen (die blockieren den Build), Groß-/Kleinschreibung prüfen, *Clean + Rebuild*
+  oder `bin`/`obj` löschen.
+* `XamlParseException` in `InitializeComponent()` („Provide value on 'TypeConverterMarkupExtension' threw an exception“) →
+  der Fehler liegt im XAML an der genannten Zeile/Position. Ein Attribut-Text ließ sich nicht umwandeln. Die *Inner Exception* nennt die Ursache.
+** Geschweifte Klammern fehlen: `Command="Binding LoadCommand"` ist ein normaler Text, richtig ist `Command="{Binding LoadCommand}"`.
+** Bild/Icon nicht gefunden: Datei ins Projekt aufnehmen, Build Action = *Resource*, Pfad prüfen (`/Images/ball.png`, `/` = Projektwurzel).
+** Ungültige Werte: `Margin="5;0"`, `Width="10px"`, `HorizontalAlignment="Centre"`.
+* Button bleibt beim Tippen grau → `UpdateSourceTrigger=PropertyChanged` fehlt *und/oder* `CanExecuteChanged` leitet nicht an
+  `CommandManager.RequerySuggested` weiter. Meist sind beide Änderungen nötig.
+* Collection in `Task.Run` geändert → „This type of CollectionView does not support changes ... from a thread different from the
+  Dispatcher thread“. `IProgress<T>` oder `Dispatcher.Invoke` verwenden.
