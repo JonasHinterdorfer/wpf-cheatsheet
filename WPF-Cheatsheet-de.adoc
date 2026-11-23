@@ -471,7 +471,7 @@ try   { context.Items.Add(newItem); await context.SaveChangesAsync(); await tx.C
 catch { await tx.RollbackAsync(); throw; }
 ----
 
-* Zwei `await`s auf demselben Context gleichzeitig → Exception. Immer nacheinander.
+* Zwei ``await``s auf demselben Context gleichzeitig → Exception. Immer nacheinander.
 
 [[vm]]
 == Model und ViewModel
@@ -539,7 +539,8 @@ public class MainWindowViewModel : BaseViewModel
     }
 
     private Category? _selectedEditCategory;
-    public Category? SelectedEditCategory { get => _selectedEditCategory; set => SetProperty(ref _selectedEditCategory, value); }
+    public Category? SelectedEditCategory
+    { get => _selectedEditCategory; set => SetProperty(ref _selectedEditCategory, value); }
 
     private bool _isEditing;
     public bool IsEditing
