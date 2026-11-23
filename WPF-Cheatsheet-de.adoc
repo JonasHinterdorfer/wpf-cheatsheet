@@ -90,6 +90,34 @@ MyApp/
 * `xmlns:vm="clr-namespace:..."` macht einen C#-Namespace in XAML verfügbar.
 * Der `DataContext` wird an alle Kind-Elemente vererbt, daher sucht `{Binding X}` die Property `X` im ViewModel.
 * Das ViewModel braucht einen öffentlichen parameterlosen Konstruktor.
+* Der Namespace im `xmlns` muss exakt dem C#-`namespace` entsprechen (Groß-/Kleinschreibung zählt).
+* ViewModel in einem anderen Projekt (Klassenbibliothek): `xmlns:vm="clr-namespace:MyApp.ViewModels;assembly=MyApp.Core"`.
+* Den DataContext nur an *einer* Stelle setzen, also nicht zusätzlich im Code-Behind.
+
+=== DataContext im Code-Behind / zur Entwurfszeit
+
+[source,csharp]
+----
+public MainWindow()
+{
+    InitializeComponent();
+    DataContext = new MainWindowViewModel(service);   // Konstruktor mit Parametern möglich
+}
+
+var vm = (MainWindowViewModel)DataContext;           // im Code-Behind auf das ViewModel zugreifen
+----
+
+[source,xml]
+----
+<Window ...
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DataContext="{d:DesignInstance Type=vm:MainWindowViewModel}">
+----
+
+* Code-Behind ist nötig, wenn der Konstruktor des ViewModels Parameter braucht (Services, siehe DI).
+* `d:DataContext` gilt nur im Designer: IntelliSense für Bindings, zur Laufzeit wird keine Instanz erzeugt.
 
 == Vorlage mit mehreren Projekten (Base.WpfMvvm / Logic / UnitTest)
 
@@ -592,6 +620,31 @@ Items.Clear();
 
 == Commands
 
+=== Aufbau von ICommand
+
+[source,csharp]
+----
+public interface ICommand                      // System.Windows.Input
+{
+    void Execute(object? parameter);           // WAS beim Klick passiert
+    bool CanExecute(object? parameter);        // DARF geklickt werden?
+    event EventHandler? CanExecuteChanged;     // „Bitte CanExecute neu prüfen!“
+}
+----
+
+[cols="1,3,2",options="header"]
+|===
+| Mitglied | Aufgabe | Aufgerufen von
+| `Execute` | führt die Aktion aus | WPF beim Klick
+| `CanExecute` | `false` → der Button wird automatisch ausgegraut (`IsEnabled = false`) | WPF beim Binden und nach jedem `CanExecuteChanged`
+| `CanExecuteChanged` | sagt dem Button, dass sich die Bedingung geändert haben könnte | der Button abonniert es, der `CommandManager` (oder eigener Code) löst es aus
+|===
+
+* `parameter` ist der Wert aus `CommandParameter`, ohne `CommandParameter` ist er `null`.
+* Ablauf: Fenster lädt → Button ruft einmal `CanExecute` auf → Benutzer tippt → `CommandManager.RequerySuggested`
+  löst `CanExecuteChanged` aus → Button prüft `CanExecute` neu → Klick ruft `Execute` auf.
+* Nicht für jeden Button eine eigene Klasse schreiben: *eine* allgemeine Klasse (`DelegateCommand`) bekommt die Aktion als Delegate übergeben.
+
 === DelegateCommand (RelayCommand)
 
 [source,csharp]
@@ -624,6 +677,51 @@ public class DelegateCommand : ICommand
 * Speichert, was der Command tut (`Action`) und wann er erlaubt ist (`Func<bool>`). Ohne zweites Argument ist er immer aktiv.
 * Zwei Konstruktoren: `() => ...` ohne Parameter oder `p => ...` mit `CommandParameter`.
 * Über `CommandManager.RequerySuggested` prüft WPF `CanExecute` nach jeder Benutzereingabe automatisch neu.
+* Häufiger Fehler: `public event EventHandler CanExecuteChanged;` ohne `add`/`remove` wird nie ausgelöst, der Button bleibt
+  dauerhaft aktiv bzw. grau (VS zeigt „0 references“). Immer an `CommandManager.RequerySuggested` weiterleiten.
+* Häufiger Fehler: `_canExecute() == null` *ruft* den Delegate auf und wirft eine `NullReferenceException`, wenn keiner übergeben wurde.
+  Den Delegate selbst prüfen: `_canExecute == null || _canExecute()` bzw. `_canExecute?.Invoke() ?? true`.
+* In echten Projekten erzeugt *CommunityToolkit.Mvvm* (`[ObservableProperty]`, `[RelayCommand]`) diesen Code automatisch.
+
+=== Generischer DelegateCommand<T>
+
+[source,csharp]
+----
+public class DelegateCommand<T> : ICommand
+{
+    private readonly Action<T> _execute;
+    private readonly Func<T, bool>? _canExecute;
+
+    public DelegateCommand(Action<T> execute, Func<T, bool>? canExecute = null)
+    {
+        _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+        _canExecute = canExecute;
+    }
+
+    public void Execute(object? parameter) => _execute((T)parameter!);
+    public bool CanExecute(object? parameter) => _canExecute == null || _canExecute((T)parameter!);
+
+    public event EventHandler? CanExecuteChanged
+    {
+        add => CommandManager.RequerySuggested += value;
+        remove => CommandManager.RequerySuggested -= value;
+    }
+}
+----
+
+[source,csharp]
+----
+ClearCommand = new DelegateCommand(() => Display = "");             // ohne Parameter
+DigitCommand = new DelegateCommand<string>(d => Display += d);      // mit Parameter
+----
+
+* Typsichere Alternative zu `Action<object>`: der Parameter muss nicht selbst gecastet werden.
+* `DelegateCommand<void>` gibt es nicht (Compilerfehler CS1547, `void` ist kein Typargument). Darum beide Klassen behalten.
+  Sie dürfen gleich heißen, weil Klassen mit unterschiedlich vielen Typparametern verschiedene Typen sind (wie `Action` und `Action<T>`).
+* Beide Klassen in `DelegateCommand.cs` ablegen oder die generische Datei `DelegateCommandOfT.cs` nennen.
+* `CommandParameter="7"` ist ein `string`. `DelegateCommand<string>` verwenden und `int.Parse(d)`, ein `(int)`-Cast wirft eine `InvalidCastException`.
+* Ohne `CommandParameter` ist der Parameter `null`. Bei Werttypen wie `DelegateCommand<int>` stürzt der Cast dann ab.
+* `CommandParameter="{Binding}"` übergibt das gebundene Element, z. B. `DelegateCommand<Cell>` in einem `ItemsControl`.
 
 === Command im ViewModel anlegen
 
@@ -638,6 +736,10 @@ public MainWindowViewModel()
 ----
 
 * Commands einmal im Konstruktor erzeugen, nicht bei jedem Lesen (`=> new ...`).
+* `Save` *ohne* Klammern übergibt die Methode. `Save()` würde sie sofort aufrufen und `void` übergeben (Compilerfehler).
+* Die Lambda „fängt“ `this` automatisch ein (Closure), daher ist kein Verweis auf das ViewModel nötig.
+* Werte ohne `CommandParameter` mitgeben, ebenfalls per Closure:
+  `foreach (var cell in Cells) cell.ClickCommand = new DelegateCommand(() => Play(cell));`
 * Liefert die zweite Lambda `false`, wird der gebundene Button automatisch deaktiviert.
 
 === Command binden
@@ -696,6 +798,8 @@ CommandManager.InvalidateRequerySuggested();
 ----
 
 * Nötig, wenn sich der Zustand ohne Benutzereingabe ändert (Timer, async-Code).
+* Alternative ohne `CommandManager`: ein eigenes Event, das man gezielt auslöst, z. B. im Setter der Property, von der `CanExecute` abhängt:
+  `public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);`
 
 === Tastenkürzel
 
@@ -735,8 +839,11 @@ CommandManager.InvalidateRequerySuggested();
 ----
 
 * `Auto` = so groß wie der Inhalt, `*` = restlicher Platz, `2*` = doppelter Anteil, Zahl = feste Pixel.
+* Eine leere `<RowDefinition/>` entspricht `Height="*"` (gleicher Anteil).
 * `Grid.Row/Column` sind 0-basiert. `RowSpan/ColumnSpan` verbinden Zellen.
 * Elemente in derselben Zelle liegen übereinander.
+* Layout nachbauen: zuerst Zeilen und Spalten zählen, dann für jedes Element `Row`, `Column`, `RowSpan` und `ColumnSpan` setzen.
+* `Grid`/`DockPanel` für die Grundstruktur des Fensters, `StackPanel` für kleine Gruppen.
 
 === GridSplitter
 
@@ -759,6 +866,10 @@ CommandManager.InvalidateRequerySuggested();
 
 * Stapelt Elemente vertikal (Standard) oder horizontal. Gut für Label + Eingabe-Zeilen und Button-Leisten.
 * Begrenzt die Größe der Kinder nicht, daher scrollt eine `ListBox` darin nie. Stattdessen eine Grid-Zeile mit `*` verwenden.
+* Hat in WPF keine `Spacing`-Property (anders als WinUI). Abstände über `Margin` an den Kindern, z. B. `Margin="5,0"`.
+* Ein horizontales StackPanel streckt die Kinder nicht auf die Breite. Soll die TextBox den Rest füllen, `DockPanel` oder eine `*`-Spalte verwenden.
+* Gleiche Label-Breite (`Width="100"`) richtet die Eingaben untereinander aus. Bei vielen Zeilen ist ein `Grid` sauberer.
+* `<Separator/>` zeichnet eine dünne horizontale Trennlinie zwischen Abschnitten.
 
 === DockPanel
 
@@ -772,6 +883,10 @@ CommandManager.InvalidateRequerySuggested();
 ----
 
 * Dockt Elemente in der Reihenfolge ihrer Deklaration an die Ränder. Das letzte Element füllt den Rest.
+* Ohne `DockPanel.Dock` dockt ein Kind *links*. Beim letzten Kind wird `Dock` ignoriert (`LastChildFill="True"` ist Standard).
+* Daher zuerst alle angedockten Elemente (`Top`, `Bottom` ...), das füllende Element (z. B. `DataGrid`) als *letztes* Kind.
+  Steht es davor, nimmt es den ganzen Platz und ein späteres `Dock="Bottom"`-Element wird nicht angezeigt.
+* Im `Grid` mit `Auto`/`*`/`Auto`-Zeilen ist die Reihenfolge im XAML egal.
 
 === WrapPanel / UniformGrid
 
@@ -781,7 +896,8 @@ CommandManager.InvalidateRequerySuggested();
 <UniformGrid Rows="3" Columns="3"> ... </UniformGrid>
 ----
 
-* `WrapPanel`: bricht in die nächste Zeile um, wenn der Platz ausgeht.
+* `WrapPanel`: bricht in die nächste Zeile um, wenn der Platz ausgeht. `ItemWidth`/`ItemHeight` erzwingen gleich große Zellen,
+  `Orientation="Vertical"` füllt spaltenweise.
 * `UniformGrid`: alle Zellen gleich groß, wird zeilenweise befüllt, kein `Grid.Row` nötig.
 
 === Canvas
@@ -796,6 +912,7 @@ CommandManager.InvalidateRequerySuggested();
 
 * Absolute Positionierung mit `Canvas.Left/Top`. Zum Zeichnen und für freie Anordnung.
 * Ohne `Background` empfängt der Canvas keine Mausklicks.
+* Nicht für Formulare verwenden: kein automatisches Layout, nichts passt sich der Fenstergröße an.
 
 === ScrollViewer
 
@@ -807,10 +924,13 @@ CommandManager.InvalidateRequerySuggested();
 ----
 
 * Zeigt Scrollbalken, wenn der Inhalt größer als der sichtbare Bereich ist.
+* `HorizontalScrollBarVisibility` ist standardmäßig `Disabled`. Für horizontales Scrollen auf `Auto` oder `Visible` setzen.
 
 === Häufige Layout-Properties
 
 * `Margin="links,oben,rechts,unten"`: Abstand nach außen. `Padding`: Abstand nach innen.
+  Kurzformen: `Margin="10"` = überall 10, `Margin="10,5"` = links/rechts 10, oben/unten 5.
+  Achtung: `Margin="0.2"` ist *ein* Wert (0,2 px überall), nicht `0,2`.
 * `HorizontalAlignment` / `VerticalAlignment`: `Left|Center|Right|Stretch`.
 * `HorizontalContentAlignment`: richtet den Inhalt innerhalb eines Controls aus.
 * `MinWidth`, `MaxWidth`, `Width="Auto"`.
@@ -843,6 +963,11 @@ CommandManager.InvalidateRequerySuggested();
 * `OneWay`: Quelle → UI. `TwoWay`: beide Richtungen (Standard bei `TextBox.Text`, `IsChecked`, `Slider.Value`).
   `OneTime`: einmal lesen. `OneWayToSource`: nur UI → Quelle.
 * `UpdateSourceTrigger=PropertyChanged` schreibt bei jedem Tastendruck zurück. Standard bei der TextBox ist `LostFocus`.
+  `Explicit`: nur beim Aufruf von `BindingExpression.UpdateSource()`.
+* Hängt `CanExecute` eines Buttons vom Text ab, unbedingt `PropertyChanged` verwenden. Sonst ist die Property beim Tippen
+  noch leer und der Button bleibt grau, bis die TextBox den Fokus verliert.
+* `UpdateSourceTrigger` wirkt nur bei Eingabe-Controls. Für Eingaben eine `TextBox` verwenden, ein `TextBlock` zeigt nur an.
+* Quellen eines Bindings: `DataContext` (Standard, MVVM), `ElementName=...`, `RelativeSource=...`, `Source={StaticResource ...}`.
 
 === An ein anderes Control binden
 
@@ -1072,24 +1197,164 @@ UpdateCommand = new DelegateCommand(async () =>
 
 == Listen und Templates
 
-=== ItemsControl mit DataTemplate
+=== ItemsControl
+
+[source,xml]
+----
+<ItemsControl ItemsSource="{Binding Items}"/>
+----
+
+* `ItemsControl` erzeugt für jedes Element der Liste einen Eintrag. Ohne Template wird `ToString()` angezeigt.
+* Basis aller Listen-Controls:
+
+[cols="1,3",options="header"]
+|===
+| Control | ergänzt
+| `ItemsControl` | nichts (keine Auswahl, kein Scrollen), ideal für Spielfelder und Zeichnungen
+| `ListBox` | Auswahl (`SelectedItem`, `SelectionMode`), Scrollen
+| `ListView` | wie `ListBox`, zusätzlich Spalten (`GridView`)
+| `ComboBox` | Aufklappliste mit Auswahl
+| `DataGrid` | editierbare Tabelle
+|===
+
+* `ItemsSource` an eine `ObservableCollection<T>` binden, damit Hinzufügen/Entfernen sichtbar wird.
+* Entweder `ItemsSource` *oder* Kinder direkt im XAML (`<ItemsControl><TextBlock .../></ItemsControl>`), nicht beides.
+
+=== DataTemplate (Aussehen eines Elements)
 
 [source,xml]
 ----
 <ItemsControl ItemsSource="{Binding Items}">
     <ItemsControl.ItemTemplate>
         <DataTemplate>
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Text="{Binding Name}"/>
-                <TextBlock Text="{Binding Value}" Margin="10,0,0,0"/>
-            </StackPanel>
+            <Border BorderBrush="Gray" BorderThickness="1" Padding="5" Margin="2">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding Value}" Margin="10,0,0,0"/>
+                </StackPanel>
+            </Border>
         </DataTemplate>
     </ItemsControl.ItemTemplate>
 </ItemsControl>
 ----
 
-* `DataTemplate` legt fest, wie ein Element aussieht. Die Bindings darin beziehen sich auf das Element.
-* `ItemsControl` hat weder Auswahl noch Scrolling. `ListBox` ergänzt Auswahl, `ListView` ergänzt Spalten.
+* `DataTemplate` legt fest, wie *ein* Element aussieht. Es wird für jedes Element der Liste kopiert.
+* Der DataContext im Template ist das *Element* (z. B. ein `Item`), nicht das ViewModel. `{Binding Name}` meint also `item.Name`.
+* `{Binding}` ohne Pfad ist das ganze Element (z. B. für `CommandParameter` oder einen Converter).
+* Auf das ViewModel des Fensters zugreifen: siehe „Aus einem Template an das ViewModel des Fensters binden“.
+* Ein Template hat genau *ein* Wurzelelement (hier `Border`), Mehreres in ein Panel packen.
+
+=== DataTemplate in ListBox / ComboBox
+
+[source,xml]
+----
+<ListBox ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}">
+    <ListBox.ItemTemplate>
+        <DataTemplate>
+            <StackPanel Orientation="Horizontal">
+                <Rectangle Width="12" Height="12" Fill="{Binding Color}" Margin="0,0,5,0"/>
+                <TextBlock Text="{Binding Name}"/>
+            </StackPanel>
+        </DataTemplate>
+    </ListBox.ItemTemplate>
+</ListBox>
+----
+
+* Gleiches Prinzip für `ListBox`, `ListView` und `ComboBox` (`ComboBox.ItemTemplate`).
+* `ItemTemplate` und `DisplayMemberPath` schließen sich aus. Nur eines davon setzen.
+* `SelectedItem` ist weiterhin das Datenobjekt, nicht das Template.
+
+=== DataTemplate als Ressource wiederverwenden
+
+[source,xml]
+----
+<Window.Resources>
+    <DataTemplate x:Key="ItemTemplate">
+        <TextBlock Text="{Binding Name}"/>
+    </DataTemplate>
+</Window.Resources>
+
+<ListBox  ItemsSource="{Binding Items}"    ItemTemplate="{StaticResource ItemTemplate}"/>
+<ComboBox ItemsSource="{Binding Items}"    ItemTemplate="{StaticResource ItemTemplate}"/>
+----
+
+* Mit `x:Key` muss das Template ausdrücklich per `StaticResource` zugewiesen werden.
+
+=== Implizites DataTemplate (DataType)
+
+[source,xml]
+----
+<Window ... xmlns:m="clr-namespace:MyApp.Models">
+    <Window.Resources>
+        <DataTemplate DataType="{x:Type m:Circle}">
+            <Ellipse Width="{Binding Size}" Height="{Binding Size}" Fill="Red"/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type m:Square}">
+            <Rectangle Width="{Binding Size}" Height="{Binding Size}" Fill="Blue"/>
+        </DataTemplate>
+    </Window.Resources>
+
+    <ItemsControl ItemsSource="{Binding Shapes}"/>   <!-- kein ItemTemplate nötig -->
+</Window>
+----
+
+[source,csharp]
+----
+public ObservableCollection<ShapeBase> Shapes { get; } = new();   // enthält Circle und Square
+----
+
+* Ohne `x:Key`, aber mit `DataType` gilt das Template automatisch für *jedes* Objekt dieses Typs, in allen Listen und `ContentControl`s darunter.
+* Bei gemischten Listen (Basisklasse) wählt WPF pro Element das passende Template.
+* Funktioniert nur mit Klassen, nicht mit Interfaces.
+* Zusätzlich hilft `DataType` dem Designer/IntelliSense, die Properties im Template zu kennen.
+
+=== Einzelnes Objekt mit Template (ContentControl)
+
+[source,xml]
+----
+<ContentControl Content="{Binding SelectedItem}">
+    <ContentControl.ContentTemplate>
+        <DataTemplate>
+            <StackPanel>
+                <TextBlock Text="{Binding Name}" FontSize="16"/>
+                <TextBlock Text="{Binding Description}" TextWrapping="Wrap"/>
+            </StackPanel>
+        </DataTemplate>
+    </ContentControl.ContentTemplate>
+</ContentControl>
+----
+
+* Zeigt *ein* Objekt mit einem Template an, z. B. den Detailbereich bei Master-Detail. Ist `Content` `null`, bleibt es leer.
+* Mit impliziten Templates (`DataType`) für ViewModels lässt sich so die Ansicht wechseln: `Content="{Binding CurrentViewModel}"`.
+
+=== Trigger im DataTemplate
+
+[source,xml]
+----
+<DataTemplate>
+    <TextBlock x:Name="txt" Text="{Binding Name}"/>
+    <DataTemplate.Triggers>
+        <DataTrigger Binding="{Binding IsDone}" Value="True">
+            <Setter TargetName="txt" Property="Foreground" Value="Gray"/>
+            <Setter TargetName="txt" Property="TextDecorations" Value="Strikethrough"/>
+        </DataTrigger>
+    </DataTemplate.Triggers>
+</DataTemplate>
+----
+
+* Ändert das Aussehen eines Eintrags abhängig von seinen Daten. `TargetName` verweist auf ein Element mit `x:Name` im Template.
+* Damit sich der Eintrag bei Änderung von `IsDone` aktualisiert, muss die Elementklasse `INotifyPropertyChanged` implementieren.
+
+=== ItemsControl mit Scrollen
+
+[source,xml]
+----
+<ScrollViewer VerticalScrollBarVisibility="Auto">
+    <ItemsControl ItemsSource="{Binding Items}"/>
+</ScrollViewer>
+----
+
+* `ItemsControl` scrollt nicht selbst. Der `ScrollViewer` braucht eine begrenzte Höhe (Grid-Zeile mit `*`, nicht in einem `StackPanel`).
 
 === Anordnung ändern (ItemsPanel)
 
@@ -1133,18 +1398,19 @@ UpdateCommand = new DelegateCommand(async () =>
 ----
 
 * Tabellenartige Liste mit Überschriften. Jede Spalte bindet an eine Property.
+* Schlanker als ein `DataGrid`, aber ohne Gitterlinien.
 
-=== DataGrid
+=== DataGrid (Tabelle mit eigenen Spalten)
 
 [source,xml]
 ----
-<DataGrid Grid.Row="2" ItemsSource="{Binding Document.Entries}" SelectedItem="{Binding SelectedEntry}"
+<DataGrid Grid.Row="2" ItemsSource="{Binding Entries}" SelectedItem="{Binding SelectedEntry}"
           AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
           HeadersVisibility="Column" SelectionMode="Single" VerticalScrollBarVisibility="Visible">
     <DataGrid.Columns>
         <DataGridTextColumn Header="Time"        Width="80"   Binding="{Binding Time}"/>
         <DataGridTextColumn Header="Text"        Width="Auto" Binding="{Binding Text}"/>
-        <DataGridTextColumn Header="Information" Width="*"    Binding="{Binding EventInformation}"/>
+        <DataGridTextColumn Header="Information" Width="*"    Binding="{Binding Information}"/>
         <DataGridTextColumn Header="Preis"       Binding="{Binding Price, StringFormat=N2}"/>
         <DataGridCheckBoxColumn Header="Aktiv"   Binding="{Binding IsActive}"/>
         <DataGridTemplateColumn Header="">
@@ -1159,11 +1425,26 @@ UpdateCommand = new DelegateCommand(async () =>
 </DataGrid>
 ----
 
-* `AutoGenerateColumns="False"`, sonst erscheinen alle Properties zusätzlich als Spalten.
+[source,csharp]
+----
+public ObservableCollection<EntryRow> Entries { get; } = new();
+
+Entries.Clear();
+foreach (string line in File.ReadAllLines(path))
+{
+    string[] parts = line.Split(';', 3);       // höchstens 3 Teile, ';' im letzten Teil bleibt erhalten
+    if (parts.Length < 3) continue;
+    Entries.Add(new EntryRow { Time = parts[0], Text = parts[1], Information = parts[2] });
+}
+----
+
+* Eine Zeile = ein Objekt (Model-Klasse mit Properties), die Liste ist eine `ObservableCollection<T>`.
+* `AutoGenerateColumns="False"`, sonst erscheinen alle Properties zusätzlich als Spalten (eigene Überschriften, Reihenfolge, Breiten).
 * `IsReadOnly="True"` + `CanUserAddRows="False"`: keine Bearbeitung und keine leere „neue Zeile“ am Ende.
+* `HeadersVisibility="Column"` blendet die graue Zeilenkopf-Spalte aus.
 * `Width`: Zahl, `Auto` oder `*` (letzte Spalte füllt den Rest).
 * `DataGridTextColumn.Binding` ist standardmäßig *TwoWay*. Bei Properties ohne Setter → Exception, außer `IsReadOnly="True"` oder `Mode=OneWay`.
-* Damit das DataGrid scrollt, in eine Grid-Zeile mit `Height="*"` legen (nicht in ein `StackPanel`).
+* Damit das DataGrid scrollt, in eine Grid-Zeile mit `Height="*"` oder als letztes Kind in ein `DockPanel` legen (nicht in ein `StackPanel`).
 * Text rechtsbündig: `<DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>`.
 * Neue Zeilen erscheinen automatisch, wenn `ItemsSource` eine `ObservableCollection` ist. Zum Mitscrollen: `dataGrid.ScrollIntoView(item)` (Code-Behind).
 
@@ -2513,6 +2794,42 @@ bool inRoot = Path.GetFullPath(Path.GetDirectoryName(file)!) == Path.TrimEndingD
 * `Path.GetFileName` auf einen Ordnerpfad (ohne abschließendes `\`) liefert den Ordnernamen. `Directory.GetDirectories` liefert Pfade ohne `\` am Ende.
 * `Directory.GetFiles(dir, "*.txt", SearchOption.AllDirectories)` sucht rekursiv. Ohne Option nur im angegebenen Ordner.
 
+=== Datei neben der .exe laden
+
+[source,csharp]
+----
+string path = Path.Combine(AppContext.BaseDirectory, "data.txt");
+if (!File.Exists(path)) { /* Fehlermeldung anzeigen */ return; }
+string[] lines = File.ReadAllLines(path);
+----
+
+[source,xml]
+----
+<ItemGroup>
+  <None Update="data.txt" CopyToOutputDirectory="PreserveNewest" />
+</ItemGroup>
+----
+
+* `AppContext.BaseDirectory` ist der Ordner der `.exe` (z. B. `bin\Debug\net10.0-windows\`) und endet bereits mit `\`.
+* `Directory.GetCurrentDirectory()` ist das *Arbeitsverzeichnis* und hängt davon ab, wie die App gestartet wurde, also unzuverlässig.
+* Pfade immer mit `Path.Combine` verbinden, nicht mit `+ "\\"` (sonst entsteht `\\`).
+* Damit die Datei im `bin`-Ordner landet: in den Dateieigenschaften *Copy to Output Directory = Copy if newer* (entspricht dem `ItemGroup` oben).
+
+=== Action und Func (Delegates)
+
+[cols="1,1,2",options="header"]
+|===
+| Delegate | Signatur | Beispiel
+| `Action` | `void M()` | `Action a = () => Count++;`
+| `Action<T>` | `void M(T x)` | `Action<string> a = s => Display += s;`
+| `Action<T1, T2>` | `void M(T1 x, T2 y)` | `Action<int, int> a = (x, y) => Sum = x + y;`
+| `Func<TResult>` | `TResult M()` | `Func<bool> f = () => Name != "";`
+| `Func<T, TResult>` | `TResult M(T x)` | `Func<string, bool> f = s => s.Length > 0;`
+|===
+
+* Bei `Func` ist der *letzte* Typ der Rückgabetyp. `Action` hat keine Rückgabe, ein `Func<void>` gibt es nicht.
+* Aufruf: `a("7");` oder `a.Invoke("7");`, bei möglichem `null`: `a?.Invoke("7");`.
+
 === Datum aus Text (fixes Format)
 
 [source,csharp]
@@ -2800,6 +3117,31 @@ dotnet add MyApp.Tests package Moq
 * Getestet wird nur das ViewModel, *kein* Fenster: Properties setzen, Commands ausführen, Ergebnis prüfen.
 * Ausführen: `dotnet test` oder im Test-Explorer. Einzelner Test: `dotnet test --filter "FullyQualifiedName~SaveCommand"`.
 
+=== Test-Explorer findet keine Tests
+
+[source,xml]
+----
+<PropertyGroup>
+  <IsPackable>false</IsPackable>
+  <IsTestProject>true</IsTestProject>
+</PropertyGroup>
+<ItemGroup>
+  <PackageReference Include="Microsoft.NET.Test.Sdk" Version="..." />
+  <PackageReference Include="xunit" Version="..." />
+  <PackageReference Include="xunit.runner.visualstudio" Version="..." />
+  <!-- MSTest: MSTest.TestAdapter + MSTest.TestFramework, NUnit: NUnit + NUnit3TestAdapter -->
+</ItemGroup>
+----
+
+* Tests erscheinen erst nach einem *erfolgreichen* Build (Strg+Umschalt+B). Fehler bei der Suche stehen unter *Ausgabe → Tests*.
+* Ohne `Microsoft.NET.Test.Sdk` und den passenden Adapter werden keine Tests gefunden. Schlägt der NuGet-Restore fehl
+  („Failed to restore“): Projektmappe → *NuGet-Pakete wiederherstellen*.
+* Verweist das Testprojekt auf ein `net10.0-windows`-Projekt, muss es selbst `net10.0-windows` sein, sonst schlägt der Build fehl.
+* Testklasse `public`, Methode `public` und nicht `static`, mit Attribut (`[Fact]`, `[TestMethod]`, `[Test]`). Async-Tests: `async Task`, nicht `async void`.
+* Test-Explorer → Einstellungen → *Prozessorarchitektur für AnyCPU-Projekte* auf `Auto` bzw. `x64` stellen.
+* Hilft nichts: VS schließen, den versteckten `.vs`-Ordner neben der `.sln` sowie alle `bin`/`obj`-Ordner löschen, neu bauen.
+* Findet `dotnet test` im Terminal die Tests, liegt das Problem nur in Visual Studio.
+
 === Aufbau eines Tests (Arrange / Act / Assert)
 
 [source,csharp]
@@ -2843,7 +3185,7 @@ vm.LoadCommand.CanExecute(null).Should().BeTrue();          // .BeFalse()
 vm.Document.Entries.Should().HaveCount(2);                  // .BeEmpty() / .ContainSingle()
 vm.Document.NewText.Should().BeNullOrEmpty();               // .BeNull() / .NotBeNull()
 vm.Document.Entries.First().Time.Should().Be("42:05");
-list.Should().Contain(x => x.Text == "Tor");
+list.Should().Contain(x => x.Text == "Abc");
 list.Should().BeEquivalentTo(new[] { "A", "B" });           // gleicher Inhalt, Reihenfolge egal
 value.Should().BeGreaterThan(0).And.BeLessThan(10);
 
@@ -3021,3 +3363,16 @@ public void CloseCommand_ClosesWithFalse()
 * Liste nach zweitem Laden doppelt → `Collection.Clear()` vor dem Befüllen vergessen.
 * `DataGrid` zeigt doppelte Spalten → `AutoGenerateColumns="False"` fehlt.
 * Index-Binding `Cells[0]` aktualisiert nicht → Array statt `ObservableCollection` verwendet.
+* Designer meldet „MainWindowViewModel existiert nicht im Namespace clr-namespace:...“, obwohl alles stimmt → Projekt bauen
+  (Strg+Umschalt+B). Der XAML-Designer kennt nur Klassen aus dem letzten *erfolgreichen* Build. Hilft das nicht:
+  in der Fehlerliste nach C#-Fehlern suchen (die blockieren den Build), Groß-/Kleinschreibung prüfen, *Clean + Rebuild*
+  oder `bin`/`obj` löschen.
+* `XamlParseException` in `InitializeComponent()` („Provide value on 'TypeConverterMarkupExtension' threw an exception“) →
+  der Fehler liegt im XAML an der genannten Zeile/Position. Ein Attribut-Text ließ sich nicht umwandeln. Die *Inner Exception* nennt die Ursache.
+** Geschweifte Klammern fehlen: `Command="Binding LoadCommand"` ist ein normaler Text, richtig ist `Command="{Binding LoadCommand}"`.
+** Bild/Icon nicht gefunden: Datei ins Projekt aufnehmen, Build Action = *Resource*, Pfad prüfen (`/Images/ball.png`, `/` = Projektwurzel).
+** Ungültige Werte: `Margin="5;0"`, `Width="10px"`, `HorizontalAlignment="Centre"`.
+* Button bleibt beim Tippen grau → `UpdateSourceTrigger=PropertyChanged` fehlt *und/oder* `CanExecuteChanged` leitet nicht an
+  `CommandManager.RequerySuggested` weiter. Meist sind beide Änderungen nötig.
+* Collection in `Task.Run` geändert → „This type of CollectionView does not support changes ... from a thread different from the
+  Dispatcher thread“. `IProgress<T>` oder `Dispatcher.Invoke` verwenden.
