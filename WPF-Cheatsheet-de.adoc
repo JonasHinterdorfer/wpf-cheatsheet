@@ -23,7 +23,7 @@ Alle Snippets verwenden neutrale Platzhalter-Namen (Tabelle unten) und sind zum 
 | *1. Logik*
 | Helper/Parser ohne UI (Extension, Regex, Try-Muster). Helper-Tests laufen lassen, bis grün. → <<logik>>
 | *2. DB + Import*
-| Repository-Abfrage (Filter + `Select` in DTO), `ImportService` (Transaktion, Navigation-Properties, ein `AddAsync`),
+| Entities + DbContext-Mapping, Migration (`Add-Migration`, `Update-Database`), Repository-Abfrage (Filter + `Select` in DTO), `ImportService` (Transaktion, Navigation-Properties, ein `AddAsync`),
   Konsolen-Import. → <<db>>
 | *3. ViewModel*
 | Pro Feld eine Property mit `SetProperty`, Listen als `ObservableCollection`. Pro Button `CanXxx()` + `Xxx()` + `XxxCommand`.
@@ -89,7 +89,7 @@ MyApp.sln
 └── Wpf/              ← App.xaml(.cs), Views/, Controls/, WindowNavigator
 ----
 
-* Reihenfolge: Entities/Contracts lesen → Repository-Abfrage → ImportService → ViewModel → View.
+* Reihenfolge: Entities lesen bzw. anlegen → DbContext + Migration → Repository-Abfrage → ImportService → ViewModel → View.
 * ViewModels in eigenem Projekt → im XAML mit Assembly einbinden:
   `xmlns:vm="clr-namespace:Wpf.ViewModels;assembly=Wpf.ViewModels"`.
 
@@ -370,6 +370,175 @@ string tags = string.Join(",", item.Tags.Select(t => t.Name));   // Liste als Te
 
 [[db]]
 == Datenbank und Import
+
+=== Entities anlegen (Core/Entities)
+
+[source,csharp]
+----
+public class Item : EntityObject                       // Vorlage: EntityObject = Id + RowVersion
+{
+    [MaxLength(100)] public string  Name        { get; set; } = "";   // string  = NOT NULL
+    [MaxLength(256)] public string? Description { get; set; }         // string? = NULL erlaubt
+    public DateOnly CreationDate { get; set; }
+    public decimal  Price        { get; set; }
+
+    public int?      CategoryId { get; set; }            // int? = optionaler Fremdschlüssel
+    public Category? Category   { get; set; }            // Navigation (n-Seite von 1:n)
+
+    public List<Detail> Details { get; set; } = new();   // 1:n (Kinder)
+    public List<Tag>    Tags    { get; set; } = new();   // m:n (Gegenseite: List<Item>)
+}
+
+public class Category : EntityObject
+{
+    [MaxLength(50)] public string Name  { get; set; } = "";
+    public List<Item>             Items { get; set; } = new();
+}
+
+public class Detail : EntityObject                     // 1:n-Kind
+{
+    public int   ItemId { get; set; }                  // int = Pflicht → Cascade Delete
+    public Item? Item   { get; set; }
+    public int     SeqNo  { get; set; }
+    public int     Code   { get; set; }
+    public int     Count  { get; set; }
+    public int?    Option { get; set; }
+    public double? Value  { get; set; }
+}
+
+public class Tag : EntityObject                        // m:n ohne Zusatzdaten
+{
+    [MaxLength(50)] public string Name  { get; set; } = "";
+    public List<Item>             Items { get; set; } = new();
+}
+
+public class Rating : EntityObject                     // m:n MIT Zusatzdaten = eigene Entity
+{
+    public int  ItemId { get; set; }
+    public Item? Item  { get; set; }
+    public int  TagId  { get; set; }
+    public Tag?  Tag   { get; set; }
+    [Range(1, 5)] public int Stars { get; set; }
+    public DateTime Created { get; set; }
+}
+----
+
+* Konventionen: Property `Id` = Primärschlüssel (Identity). `XxxId` + Navigation `Xxx` = Fremdschlüssel.
+  `int?` = optional (beim Löschen `SetNull`), `int` = Pflicht (Cascade). Zwei `List<>`-Seiten = m:n mit Join-Tabelle.
+* Ohne Vorlage selbst: `public int Id { get; set; }` und für Concurrency `[Timestamp] public byte[]? RowVersion { get; set; }`.
+* Attribute: `[Required]`, `[MaxLength(n)]`, `[Range]`, `[NotMapped]` (keine Spalte), `[ForeignKey(nameof(X))]`,
+  `[Column(TypeName = "decimal(10,2)")]`, an der Klasse `[Index(nameof(Name), IsUnique = true)]`. `enum` wird als `int` gespeichert.
+
+=== DbContext und Mapping (Persistence)
+
+[source,csharp]
+----
+public class ApplicationDbContext : DbContext
+{
+    public DbSet<Item>     Items      => Set<Item>();   // ein DbSet pro Tabelle
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Detail>   Details    => Set<Detail>();
+    public DbSet<Tag>      Tags       => Set<Tag>();
+    public DbSet<Rating>   Ratings    => Set<Rating>();
+
+    public ApplicationDbContext() { }                   // für Migrationen / ohne DI
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options) { }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        if (optionsBuilder.IsConfigured) return;        // DI hat schon konfiguriert
+        var cs = ConfigurationHelper.GetConfiguration().GetConnectionString("DefaultConnection");
+        optionsBuilder.UseSqlServer(cs);
+    }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Item>(e =>
+        {
+            e.HasIndex(i => i.Name).IsUnique();         // eindeutig
+            e.Property(i => i.Name).HasMaxLength(100).IsRequired();
+            e.Property(i => i.Price).HasPrecision(10, 2);   // decimal immer festlegen
+            e.HasOne(i => i.Category)                   // 1:n explizit
+             .WithMany(c => c.Items)
+             .HasForeignKey(i => i.CategoryId)
+             .OnDelete(DeleteBehavior.SetNull);
+            e.HasMany(i => i.Tags).WithMany(t => t.Items);  // m:n, Join-Tabelle automatisch
+        });
+
+        modelBuilder.Entity<Detail>()
+            .HasIndex(d => new { d.ItemId, d.SeqNo }).IsUnique();   // zusammengesetzt eindeutig
+
+        modelBuilder.Entity<Rating>()
+            .HasOne(r => r.Item).WithMany().HasForeignKey(r => r.ItemId)
+            .OnDelete(DeleteBehavior.Restrict);         // mehrere Cascade-Pfade vermeiden
+
+        modelBuilder.Entity<Category>().HasData(        // Startdaten (Id fix angeben!)
+            new Category { Id = 1, Name = "Default" });
+    }
+}
+----
+
+[source,json]
+----
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=(localdb)\\MSSQLLocalDB;Database=MyAppDb;Trusted_Connection=True"
+  }
+}
+----
+
+* `appsettings.json` liegt im Startprojekt, Eigenschaften: *In Ausgabeverzeichnis kopieren = Immer kopieren*.
+* Zertifikatsfehler beim Verbinden → `;TrustServerCertificate=True` an den Connection-String anhängen.
+* Konvention reicht meistens. `OnModelCreating` nur für: Unique-Index, `decimal`-Genauigkeit, Delete-Verhalten,
+  zusammengesetzte Schlüssel (`e.HasKey(x => new { x.AId, x.BId })`), Startdaten.
+* „multiple cascade paths“ beim `Update-Database` → bei einer Beziehung `OnDelete(DeleteBehavior.Restrict)` setzen.
+* NuGet: `Microsoft.EntityFrameworkCore.SqlServer` (Persistence), `Microsoft.EntityFrameworkCore.Tools`
+  (für `Add-Migration`), `Microsoft.EntityFrameworkCore.Design` (Startprojekt).
+
+=== Migration erstellen (Visual Studio)
+
+. Startprojekt festlegen: Rechtsklick auf das Projekt mit `appsettings.json` und Referenz auf Persistence
+  (z. B. `ImportConsoleApp` oder `Wpf`) → *Als Startprojekt festlegen*.
+. *Ansicht → Weitere Fenster → Paket-Manager-Konsole*. Oben *Standardprojekt* = `Persistence` (wo der DbContext liegt).
+. Befehle eingeben:
+
+[source,powershell]
+----
+Add-Migration InitialCreate          # erzeugt Persistence/Migrations/..._InitialCreate.cs
+Update-Database                      # wendet alle offenen Migrationen auf die DB an
+
+Add-Migration AddPrice               # nach jeder Modelländerung: neue Migration + Update-Database
+Remove-Migration                     # letzte, noch NICHT angewendete Migration löschen
+Update-Database InitialCreate        # auf einen älteren Stand zurück (0 = alles zurück)
+Drop-Database                        # DB löschen (danach Update-Database = frisch)
+Get-Migration                        # Liste, welche angewendet sind
+
+# Projekte explizit angeben, wenn das Dropdown nicht passt
+Add-Migration InitialCreate -Project Persistence -StartupProject ImportConsoleApp
+----
+
+[source,sh]
+----
+# Alternative im Terminal (einmalig: dotnet tool install --global dotnet-ef)
+dotnet ef migrations add InitialCreate --project Persistence --startup-project ImportConsoleApp
+dotnet ef database update            --project Persistence --startup-project ImportConsoleApp
+----
+
+[source,csharp]
+----
+// DB beim Import frisch aufbauen (Konsole, vor dem Import; Vorlage hat evtl. eigene UoW-Methoden)
+await using var context = new ApplicationDbContext();
+await context.Database.EnsureDeletedAsync();      // alte DB weg
+await context.Database.MigrateAsync();            // alle Migrationen anwenden
+----
+
+* „The term 'Add-Migration' is not recognized“ → Paket `Microsoft.EntityFrameworkCore.Tools` fehlt.
+* „Unable to create an object of type 'ApplicationDbContext'“ → parameterloser Konstruktor + `OnConfiguring` fehlt,
+  falsches Startprojekt, oder `appsettings.json` wird nicht ins Ausgabeverzeichnis kopiert.
+* „Build failed“ → erst die ganze Projektmappe fehlerfrei bauen; die Migration baut das Startprojekt.
+* Migration falsch → `Remove-Migration`, Modell korrigieren, neu `Add-Migration`. Angewendete Migrationen nicht von Hand ändern.
+* Daten ansehen: *Ansicht → SQL Server-Objekt-Explorer* → `(localdb)\MSSQLLocalDB` → Datenbank → Tabelle → *Daten anzeigen*.
 
 === Repository-Abfrage für die Übersicht (Filter in der DB)
 
