@@ -534,7 +534,8 @@ public class MainWindowViewModel : BaseViewModel
         set
         {
             if (!SetProperty(ref _selectedItem, value)) return;
-            SelectedEditCategory = EditCategories.FirstOrDefault(c => c.Id == (value?.CategoryId ?? 0));  // gleiche Instanz!
+            // gleiche Instanz wie in ItemsSource suchen, nicht neu erzeugen
+            SelectedEditCategory = EditCategories.FirstOrDefault(c => c.Id == (value?.CategoryId ?? 0));
         }
     }
 
@@ -626,7 +627,11 @@ public class MainViewModel : NotifyPropertyChanged
 
     public ICommand LoadCommand { get; }
     public ICommand SaveCommand { get; }
-    public MainViewModel() { LoadCommand = new RelayCommand(Load, CanLoad); SaveCommand = new RelayCommand(Save, CanSave); }
+    public MainViewModel()
+    {
+        LoadCommand = new RelayCommand(Load, CanLoad);
+        SaveCommand = new RelayCommand(Save, CanSave);
+    }
 
     public bool CanLoad() => !string.IsNullOrWhiteSpace(FileName) && File.Exists(FileName);
     public void Load()
@@ -709,7 +714,11 @@ public class ImportViewModel : ValidatableBaseViewModel          // Base: HasErr
 public class DetailViewModel : BaseViewModel
 {
     private readonly IUnitOfWork _uow;
-    public DetailViewModel(IUnitOfWork uow) { _uow = uow; CloseCommand = new RelayCommand(() => Controller?.CloseWindow()); }
+    public DetailViewModel(IUnitOfWork uow)
+    {
+        _uow         = uow;
+        CloseCommand = new RelayCommand(() => Controller?.CloseWindow());
+    }
     public IWindowNavigator? Controller { get; set; }
     public int ItemId { get; set; }                                    // vom Navigator VOR ShowDialog gesetzt
 
@@ -923,7 +932,9 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:MainWindowViewModel}">
     <Window.Resources>
-        <Style TargetType="Button"><Setter Property="Margin" Value="5"/><Setter Property="Padding" Value="10,2"/></Style>
+        <Style TargetType="Button">
+            <Setter Property="Margin" Value="5"/><Setter Property="Padding" Value="10,2"/>
+        </Style>
         <Style TargetType="ComboBox"><Setter Property="Margin" Value="5"/></Style>
         <Style TargetType="TextBox"><Setter Property="Margin" Value="5"/></Style>
     </Window.Resources>
@@ -946,7 +957,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
                   IsEnabled="{Binding IsNotEditing}">
             <ListView.View>
                 <GridView>
-                    <GridViewColumn Header="CreationDate" DisplayMemberBinding="{Binding CreationDate, StringFormat=d}"/>
+                    <GridViewColumn Header="Date"     DisplayMemberBinding="{Binding CreationDate, StringFormat=d}"/>
                     <GridViewColumn Header="Name"     DisplayMemberBinding="{Binding Name}" Width="160"/>
                     <GridViewColumn Header="Category" DisplayMemberBinding="{Binding Category}"/>
                     <GridViewColumn Header="Details"  DisplayMemberBinding="{Binding DetailCount}"/>
@@ -1056,7 +1067,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 <Window.Resources>
     <Style TargetType="Button"><Setter Property="Margin" Value="2"/></Style>       <!-- implizit: alle Buttons -->
     <Style x:Key="Accent" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-        <Setter Property="Background" Value="SteelBlue"/>                        <!-- Style="{StaticResource Accent}" -->
+        <Setter Property="Background" Value="SteelBlue"/>      <!-- Style="{StaticResource Accent}" -->
     </Style>
 </Window.Resources>
 
@@ -1066,8 +1077,12 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="Black"/>
             <Style.Triggers>
-                <DataTrigger Binding="{Binding Winner}" Value="X"><Setter Property="Foreground" Value="Red"/></DataTrigger>
-                <DataTrigger Binding="{Binding Winner}" Value="{x:Null}"><Setter Property="Foreground" Value="Gray"/></DataTrigger>
+                <DataTrigger Binding="{Binding Winner}" Value="X">
+                    <Setter Property="Foreground" Value="Red"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Winner}" Value="{x:Null}">
+                    <Setter Property="Foreground" Value="Gray"/>
+                </DataTrigger>
             </Style.Triggers>
         </Style>
     </TextBlock.Style>
@@ -1078,7 +1093,9 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
     <Style TargetType="ListViewItem">
         <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
         <Style.Triggers>
-            <DataTrigger Binding="{Binding CategoryId}" Value="{x:Null}"><Setter Property="Foreground" Value="Gray"/></DataTrigger>
+            <DataTrigger Binding="{Binding CategoryId}" Value="{x:Null}">
+                <Setter Property="Foreground" Value="Gray"/>
+            </DataTrigger>
         </Style.Triggers>
     </Style>
 </ListView.ItemContainerStyle>
@@ -1133,7 +1150,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
 [source,csharp]
 ----
-// Wpf/Controls/PreviewControl.xaml(.cs) – Hinzufügen → Benutzersteuerelement (UserControl)
+// Wpf/Controls/PreviewControl.xaml(.cs) - Hinzufügen → Benutzersteuerelement (UserControl)
 public partial class PreviewControl : UserControl
 {
     public static readonly DependencyProperty DetailsProperty = DependencyProperty.Register(
@@ -1153,7 +1170,8 @@ public partial class PreviewControl : UserControl
         { (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0) };
 
     private static readonly Brush[] Palette =
-        { Brushes.Red, Brushes.Orange, Brushes.Gold, Brushes.Green, Brushes.Blue, Brushes.Purple, Brushes.Violet, Brushes.Black };
+        { Brushes.Red, Brushes.Orange, Brushes.Gold, Brushes.Green,
+          Brushes.Blue, Brushes.Purple, Brushes.Violet, Brushes.Black };
 
     public PreviewControl() => InitializeComponent();
 
