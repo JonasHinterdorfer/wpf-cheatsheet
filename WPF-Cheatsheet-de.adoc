@@ -6,6 +6,8 @@
 :icons: font
 :source-highlighter: rouge
 :sectnums:
+:pdf-themesdir: {docdir}/themes
+:pdf-theme: compact
 
 Kompakte WPF/MVVM-Vorlage für die Prüfung. Die Kapitel folgen der Reihenfolge, in der man arbeitet:
 *Lesen → Logik → DB/Import → ViewModel → Fenster/Dialoge → XAML → Custom Draw → Tests*.
@@ -26,7 +28,7 @@ Jedes Snippet ist zum Kopieren gedacht. Nur die Namen aus der Tabelle unten erse
 | *3. ViewModel*
 | Pro Feld eine Property mit `SetProperty`, Listen als `ObservableCollection`. Pro Button `CanXxx()` + `Xxx()` + `XxxCommand`.
   Laden in `InitializeDataAsync` bzw. `Load()`. → <<vm>>
-| *4. Fenster/Dialoge*
+| *4. Dialoge*
 | Fenster + ViewModel in DI registrieren, Dialog-Methode in `IWindowNavigator` + `WindowNavigator`. → <<fenster>>
 | *5. XAML*
 | Bild in waagrechte Bereiche zerlegen → `Grid` mit `Auto` (fest) und `+*+` (wächst mit). Binden, Styles. → <<xaml>>
@@ -598,7 +600,7 @@ public class MainWindowViewModel : BaseViewModel
 * Async-Lambdas im Command sind `async void` → Fehler immer mit `try/catch` abfangen, sonst Absturz.
 * `SelectedItem` einer ComboBox braucht dieselbe *Instanz* wie in `ItemsSource` → per Id suchen.
 
-=== ViewModel mit Datei (Vorlage A): DTO ↔ Model, Laden, Speichern
+=== ViewModel mit Datei (Vorlage A): DTO und Model, Laden, Speichern
 
 [source,csharp]
 ----
@@ -616,7 +618,7 @@ public class EntryRow { public string Time { get; set; } = ""; public string Tex
 
 public class MainViewModel : NotifyPropertyChanged
 {
-    private readonly DataManager _manager = new();             // Lehrer-Klasse: Datei ↔ DTO
+    private readonly DataManager _manager = new();             // Lehrer-Klasse: Datei <-> DTO
     public Document Document { get; } = new();
     private string? _fileName = Path.Combine(AppContext.BaseDirectory, "Daten.txt");
     public string? FileName { get => _fileName; set => SetProperty(ref _fileName, value); }
