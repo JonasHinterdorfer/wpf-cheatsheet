@@ -11,7 +11,7 @@
 
 Kompakte WPF/MVVM-Vorlage für die Prüfung. Die Kapitel folgen der Reihenfolge, in der man arbeitet:
 *Lesen → Logik → DB/Import → ViewModel → Fenster/Dialoge → XAML → Custom Draw → Tests*.
-Jedes Snippet ist zum Kopieren gedacht. Nur die Namen aus der Tabelle unten ersetzen.
+Alle Snippets verwenden neutrale Platzhalter-Namen (Tabelle unten) und sind zum Kopieren und Anpassen gedacht.
 
 == Ablauf in der Prüfung
 
@@ -43,15 +43,19 @@ Jedes Snippet ist zum Kopieren gedacht. Nur die Namen aus der Tabelle unten erse
 aktiv/inaktiv · Liste nach erneutem Laden doppelt (`Clear()` fehlt) · Eingabefelder nach dem Hinzufügen nicht geleert ·
 beim Vergrößern wächst der falsche Bereich.
 
-*Platzhalter-Namen* in diesem Sheet (per Suchen/Ersetzen an die Angabe anpassen):
+=== Platzhalter-Namen
 
-[cols="1,2,2",options="header"]
+Per Suchen/Ersetzen (ganzes Wort, Groß-/Kleinschreibung beachten) an die Angabe anpassen:
+
+[cols="1,4",options="header"]
 |===
-| Hier | Bedeutung | Beispiel Turtle
-| `Item` | Haupt-Entity, wird importiert und gelistet | `Script`
-| `Category` | Nachschlage-Entity, nullable Fremdschlüssel (`CategoryId`) | `Origin`
-| `Detail` | 1:n-Kind mit `SeqNo` | `Move`
-| `Tag` | m:n-Beziehung, als Text „C1,C3“ angezeigt | `Competition`
+| Platzhalter | Bedeutung
+| `Item` | Haupt-Entity: wird importiert, in der Übersicht gelistet, im Detail-Dialog angezeigt
+| `Category` | Nachschlage-Entity mit nullable Fremdschlüssel `Item.CategoryId` (Filter-ComboBox, bearbeitbar)
+| `Detail` | 1:n-Kind von `Item` mit laufender Nummer `SeqNo` (z. B. Zeilen/Werte/Schritte aus der Datei)
+| `Tag` | m:n-Beziehung zu `Item`, in der Liste als Text „A,B“ angezeigt
+| `Entry` / `EntryRow` | Datensatz einer Datei (DTO) / Zeile in der Tabelle (UI)
+| `Document` | UI-Model mit Kopfdaten + Liste von `EntryRow` (Datei-Vorlage)
 |===
 
 [[vorlage]]
@@ -61,23 +65,23 @@ beim Vergrößern wächst der falsche Bereich.
 
 ----
 MyTest.sln
-├── Base.WpfMvvm/   ← Lehrer: NotifyPropertyChanged, RelayCommand(Param), BaseViewModel, Validierung, Navigator
-├── Logic/          ← DTOs + Manager (Datei laden/speichern) + Helpers (Extension-Methoden)
-├── WPFApp/         ← Models/ (UI-Models), ViewModels/, Views/, Datendatei
-└── UnitTest/       ← xUnit + FluentAssertions, testet das ViewModel
+├── Base.WpfMvvm/  ← Lehrer: NotifyPropertyChanged, RelayCommand(Param), BaseViewModel, Navigator
+├── Logic/         ← DTOs + Manager (Datei laden/speichern) + Helpers (Extension-Methoden)
+├── WPFApp/        ← Models/ (UI-Models), ViewModels/, Views/, Datendatei
+└── UnitTest/      ← xUnit + FluentAssertions, testet das ViewModel
 ----
 
 * Tests legen die Namen fest. Was der Test aufruft, muss `public` sein und genau so heißen.
 * ViewModel braucht einen parameterlosen Konstruktor (`new MainViewModel()` im Test). Kein Laden/MessageBox im Konstruktor.
 * Base-Klassen nicht neu schreiben, sondern erben: `class Document : NotifyPropertyChanged`.
-* `RelayCommand` = ohne Parameter (`new RelayCommand(Save, CanSave)`), `RelayCommandParam` = mit `CommandParameter` (`object?`).
+* `RelayCommand` = ohne Parameter (`new RelayCommand(Save, CanSave)`), `RelayCommandParam` = mit `CommandParameter`.
 
 === Vorlage B: Datenbank (Core / Persistence / Wpf.ViewModels / Wpf)
 
 ----
 MyApp.sln
 ├── Base/             ← Lehrer: AppService (DI), GenericRepository, BaseUnitOfWork, Transaction
-├── Base.WpfMvvm/     ← Lehrer: NotifyPropertyChanged, RelayCommand, (Validatable)BaseViewModel, BaseWindowNavigator
+├── Base.WpfMvvm/     ← Lehrer: NotifyPropertyChanged, RelayCommand, BaseViewModel, Navigator
 ├── Core/             ← Entities, Contracts (IUnitOfWork, I...Repository), DTOs, Parser
 ├── Persistence/      ← ApplicationDbContext, UnitOfWork, ...Repository, ImportService
 ├── ImportConsoleApp/ ← Konsolen-Import (Ordner → DB)
@@ -104,7 +108,7 @@ MyApp.sln
 <!-- MainWindow.xaml: ViewModel als DataContext -->
 <Window ... xmlns:vm="clr-namespace:MyApp.ViewModels"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        d:DataContext="{d:DesignInstance Type=vm:MainWindowViewModel}">   <!-- nur IntelliSense -->
+        d:DataContext="{d:DesignInstance Type=vm:MainWindowViewModel}">  <!-- IntelliSense -->
     <Window.DataContext>
         <vm:MainWindowViewModel />
     </Window.DataContext>
@@ -112,21 +116,21 @@ MyApp.sln
 
 [source,xml]
 ----
-<!-- Variante: Objekt als Ressource mit Startwerten (z. B. HP-Rechner) -->
-<Window ... xmlns:local="clr-namespace:CalcWithBinding"
-        DataContext="{StaticResource ACalculator}" x:DataType="local:Calculator">
+<!-- Variante: Objekt als Ressource mit Startwerten aus XAML -->
+<Window ... xmlns:local="clr-namespace:MyApp"
+        DataContext="{StaticResource MyModel}" x:DataType="local:MyModel">
     <Window.Resources>
-        <local:Calculator x:Key="ACalculator" Stack0="0" Stack1="0" Stack2="0" Stack3="0"/>
+        <local:MyModel x:Key="MyModel" Value1="0" Value2="0"/>  <!-- setzt Properties -->
     </Window.Resources>
-    <Label Content="{Binding Path=Stack0}"/>
+    <Label Content="{Binding Path=Value1}"/>
 ----
 
-* Ressource muss *vor* der Verwendung definiert sein. Steht `DataContext` als Attribut am `Window`,
-  die Ressource in `App.xaml` legen oder den DataContext erst an einem inneren Element (`<Grid DataContext=...>`) setzen.
+* Die Ressource muss *vor* der Verwendung definiert sein. Steht `DataContext` als Attribut am `Window`,
+  die Ressource in `App.xaml` legen oder den DataContext an einem inneren Element (`<Grid DataContext=...>`) setzen.
 
 [source,csharp]
 ----
-public class NotifyPropertyChanged : INotifyPropertyChanged       // Basisklasse für Models + ViewModels
+public class NotifyPropertyChanged : INotifyPropertyChanged    // Basis für Models + ViewModels
 {
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -148,16 +152,19 @@ public class RelayCommand : ICommand
     private readonly Predicate<object?>? _canExecute;
 
     public RelayCommand(Action<object?> execute, Predicate<object?>? canExecute = null)
-    { _execute = execute; _canExecute = canExecute; }
+    {
+        _execute    = execute;
+        _canExecute = canExecute;
+    }
 
-    public RelayCommand(Action execute, Func<bool>? canExecute = null)               // ohne Parameter
+    public RelayCommand(Action execute, Func<bool>? canExecute = null)       // ohne Parameter
         : this(_ => execute(), canExecute == null ? null : _ => canExecute()) { }
 
     public bool CanExecute(object? parameter) => _canExecute == null || _canExecute(parameter);
     public void Execute(object? parameter)    => _execute(parameter);
 
-    public event EventHandler? CanExecuteChanged                                     // WICHTIG: sonst bleibt der
-    {                                                                                // Button immer aktiv/grau
+    public event EventHandler? CanExecuteChanged      // WICHTIG: sonst Button immer aktiv/grau
+    {
         add    => CommandManager.RequerySuggested += value;
         remove => CommandManager.RequerySuggested -= value;
     }
@@ -173,14 +180,16 @@ public class RelayCommand : ICommand
 [source,xml]
 ----
 <ItemGroup>
-  <Content Include="Daten.txt"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+  <Content Include="data.txt">
+    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+  </Content>
 </ItemGroup>
 ----
 
 [source,csharp]
 ----
-FileName = Path.Combine(AppContext.BaseDirectory, "Daten.txt");    // = bin\Debug\net10.0-windows\
-FileName = $"{AppDomain.CurrentDomain.BaseDirectory}\\Lask-vs-BLW.txt";   // wenn die Angabe es so vorgibt
+FileName = Path.Combine(AppContext.BaseDirectory, "data.txt");   // = bin\Debug\net10.0-windows\
+FileName = $"{AppDomain.CurrentDomain.BaseDirectory}\\data.txt";  // falls so vorgegeben
 ----
 
 * Ohne `CopyToOutputDirectory` → `FileNotFoundException`. Pfade mit `Path.Combine`, nie `Directory.GetCurrentDirectory()`.
@@ -192,73 +201,87 @@ FileName = $"{AppDomain.CurrentDomain.BaseDirectory}\\Lask-vs-BLW.txt";   // wen
 
 [source,csharp]
 ----
-public static class TimeExtensions                      // static class + static Methode + "this"
+public static class ValueExtensions                 // static class + static Methode + "this"
 {
-    // "45'" oder "45'+2"  →  Gruppe 1 = 45, Gruppe 2 = 2 (optional)
-    private static readonly Regex TimeRegex = new(@"^\s*(\d+)'(?:\+(\d+))?\s*$");
+    // Format "12:34" bzw. "1:02:34" (Gruppe 1 optional) - Regex an die Angabe anpassen
+    private static readonly Regex TimeRegex = new(@"^\s*(?:(\d+):)?(\d{1,2}):(\d{2})\s*$");
 
-    public static bool TryParseTime(this string? s, out int minute, out int extra)
+    public static bool TryParseTime(this string? s, out int seconds)   // Logik nur hier
     {
-        minute = extra = 0;                             // out in jedem Pfad setzen
+        seconds = 0;                                 // out in jedem Pfad setzen
         if (string.IsNullOrWhiteSpace(s)) return false;
         var m = TimeRegex.Match(s);
         if (!m.Success) return false;
-        minute = int.Parse(m.Groups[1].Value);
-        extra  = m.Groups[2].Success ? int.Parse(m.Groups[2].Value) : 0;
-        return minute <= 120;                           // Bereich prüfen
+        int h   = m.Groups[1].Success ? int.Parse(m.Groups[1].Value) : 0;   // optionale Gruppe
+        int min = int.Parse(m.Groups[2].Value);
+        int sec = int.Parse(m.Groups[3].Value);
+        if (min > 59 || sec > 59) return false;      // Bereiche prüfen
+        seconds = h * 3600 + min * 60 + sec;
+        return true;
     }
 
-    public static bool IsValidTime(this string? s) => s.TryParseTime(out _, out _);
+    public static bool IsValidTime(this string? s) => s.TryParseTime(out _);
 
-    public static (int minute, int extra) ToTime(this string s)        // werfende Variante
-        => s.TryParseTime(out var m, out var e) ? (m, e) : throw new FormatException($"Ungültig: '{s}'");
+    public static int ToSeconds(this string s)       // werfende Variante
+        => s.TryParseTime(out var r) ? r : throw new FormatException($"Ungültig: '{s}'");
 
-    public static string ToTimeText(this (int minute, int extra) t)    // Extension auf Tupel
-        => t.extra > 0 ? $"{t.minute}'+{t.extra}" : $"{t.minute}'";    // (90, 3) → "90'+3"
-
-    public static string ToClock(this int seconds)                     // 3725 → "1:02:05", 2525 → "42:05"
+    public static string ToTimeText(this int seconds)   // 3725 → "1:02:05", 2525 → "42:05"
     {
         if (seconds < 0) throw new ArgumentOutOfRangeException(nameof(seconds));
         int h = seconds / 3600, m = seconds % 3600 / 60, s = seconds % 60;
         return h > 0 ? $"{h}:{m:00}:{s:00}" : $"{m}:{s:00}";
     }
 
-    public static (int half, int minute) Split(this int total) => (total / 45, total % 45);   // Tupel
+    public static (int part, int rest) DivRem(this int value, int size)    // Tupel zurückgeben
+        => (value / size, value % size);
 }
 
-bool ok = "45'+2".IsValidTime();                         // Aufruf wie Instanzmethode (using Logic.Helpers;)
-var (half, minute) = 50.Split();                         // Tupel zerlegen
+bool ok = "42:05".IsValidTime();                   // Aufruf wie Instanzmethode (using ...Helpers;)
+var (part, rest) = 125.DivRem(60);                 // Tupel zerlegen: 2, 5
 ----
 
-* Regex: `^ $` Anfang/Ende · `\d` Ziffer · `+` 1-n · `*` 0-n · `?` optional · `( )` Gruppe · `(?: )` ohne Auslesen · `@"..."`.
+* Regex: `^ $` Anfang/Ende · `\d` Ziffer · `+` 1-n · `*` 0-n · `?` optional · `( )` Gruppe · `(?: )` ohne Auslesen ·
+  `[A-Z]{2}` zwei Großbuchstaben · `@"..."` verbatim. Nur prüfen: `Regex.IsMatch(s, @"^[A-Z]{2}\d{3}$")`.
 * Ausnahmen: `ArgumentOutOfRangeException(nameof(x))`, `FormatException`, `ArgumentNullException`.
-* Format: `{m:00}` zweistellig, `{x:0.00}` / `{x:F2}` zwei Nachkommastellen.
-* Zahl sicher parsen: `double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)` (Punkt als Dezimaltrenner).
+* Format: `{m:00}` zweistellig, `{x:0.00}` / `{x:F2}` zwei Nachkommastellen, `{x:0.##}` höchstens zwei.
+* Extension auf Tupel: `public static string ToText(this (int a, int b) t)` → Aufruf `(1, 5).ToText()`.
+* Zahl sicher parsen: `double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)`
+  (Punkt als Dezimaltrenner, `1,5` wird abgelehnt).
 
-=== Text zeichenweise parsen (Zahl als Prefix)
+=== Text zeichenweise parsen (Zahl als Prefix + Befehlszeichen)
 
 [source,csharp]
 ----
-// "0$2B1$2c"  →  Farbe 0, 2× Richtung 1 zeichnen, Farbe 1, 2× Richtung 2 ohne Zeichnen
-// Core/Parser.cs: public static class Parser { ... }
-public static List<Detail> Parse(string text)
+// Beispiel "3A2b5$C": Zahl vor einem Zeichen = Wiederholung bzw. Wert, Zeichen = Befehl
+public static List<Detail> Parse(string text)       // Core/Parser.cs: public static class Parser
 {
     var result = new List<Detail>();
-    int prefix = 0, color = 0;
+    int prefix = 0, option = 0;
     foreach (char c in text)
     {
-        if (char.IsAsciiDigit(c)) { prefix = prefix * 10 + (c - '0'); continue; }   // mehrstellig
+        if (char.IsAsciiDigit(c))                    // mehrstellige Zahl aufbauen
+        {
+            prefix = prefix * 10 + (c - '0');
+            continue;
+        }
 
-        int repeat = prefix == 0 ? 1 : prefix;
-        if (c == '$')                    color = prefix;
-        else if (c is >= 'A' and <= 'H') result.Add(new Detail { Direction = c - 'A', Repeat = repeat, Color = color });
-        else if (c is >= 'a' and <= 'h') result.Add(new Detail { Direction = c - 'a', Repeat = repeat, Color = null });
-        else continue;                   // unbekannt (Leerzeichen, \n) ignorieren, Prefix bleibt
-        prefix = 0;                      // nach jedem Kommando zurücksetzen
+        int count = prefix == 0 ? 1 : prefix;        // fehlt die Zahl → 1
+        if (c == '$')
+            option = prefix;                         // Sonderzeichen: Zahl als Wert merken
+        else if (c is >= 'A' and <= 'Z')
+            result.Add(new Detail { Code = c - 'A', Count = count, Option = option });
+        else if (c is >= 'a' and <= 'z')
+            result.Add(new Detail { Code = c - 'a', Count = count, Option = null });
+        else
+            continue;                                // unbekannt (Leerzeichen, \n): ignorieren
+        prefix = 0;                                  // nach jedem Befehl zurücksetzen
     }
     return result;
 }
 ----
+
+* `c - 'A'` macht aus einem Buchstaben eine Zahl (`'A'` → 0, `'B'` → 1), `c - '0'` aus einer Ziffer.
+* `c is >= 'A' and <= 'H'` prüft einen Bereich. Groß-/Kleinbuchstabe als Variante (z. B. mit/ohne Option).
 
 === Text in Werte zerlegen (Kommentar, Trennzeichen, n*wert)
 
@@ -269,65 +292,81 @@ var values = new List<double?>();
 foreach (var raw in content.Split('\n'))
 {
     int hash = raw.IndexOf('#');
-    var line = hash >= 0 ? raw[..hash] : raw;                       // Kommentar abschneiden
-    foreach (var token in line.Split(new[] { ' ', '\t', '\r', ';' }, StringSplitOptions.RemoveEmptyEntries))
+    var line = hash >= 0 ? raw[..hash] : raw;                    // Kommentar abschneiden
+    var separators = new[] { ' ', '\t', '\r', ';' };
+    foreach (var token in line.Split(separators, StringSplitOptions.RemoveEmptyEntries))
     {
-        int count = 1; var text = token; int star = token.IndexOf('*');
-        if (star >= 0)
+        int count = 1;
+        var text  = token;
+        int star  = token.IndexOf('*');
+        if (star >= 0)                                           // "3*12.5"
         {
             if (!int.TryParse(token[..star], out count) || count < 1) continue;
             text = token[(star + 1)..];
         }
         double? value;
-        if (text is "x" or "X") value = null;
-        else if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)) value = d;
-        else continue;                                              // ungültig → ignorieren
+        if (text is "x" or "X") value = null;                    // Platzhalter für "fehlt"
+        else if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
+            value = d;
+        else continue;                                           // ungültig → ignorieren
         for (int i = 0; i < count; i++) values.Add(value);
     }
 }
 ----
 
+* `s[..n]` = Zeichen 0 bis n-1, `s[(n + 1)..]` = alles nach Position n. `RemoveEmptyEntries` gegen doppelte Trenner.
+
 === Ordner, Dateinamen, Datum
 
 [source,csharp]
 ----
-foreach (var dir in Directory.GetDirectories(root))                 // nur eine Ebene tief
+foreach (var dir in Directory.GetDirectories(root))              // nur eine Ebene tief
     foreach (var file in Directory.GetFiles(dir, "*.txt"))
     {
-        string folder = Path.GetFileName(dir);                      // "Kevin"            → Category
-        string name   = Path.GetFileNameWithoutExtension(file);     // "KevinDrawing1_20250225"
-        string rel    = Path.GetRelativePath(root, file);           // "Kevin\KevinDrawing1_20250225.txt"
+        string folder = Path.GetFileName(dir);                   // "GroupA"
+        string name   = Path.GetFileNameWithoutExtension(file);  // "Sample_20250225"
+        string rel    = Path.GetRelativePath(root, file);        // "GroupA\Sample_20250225.txt"
         string text   = await File.ReadAllTextAsync(file);
     }
 
-var parts = name.Split('_');                                        // Datum nur, wenn am Ende gültig
-DateOnly date = parts.Length > 1 && DateOnly.TryParseExact(parts[^1], "yyyyMMdd",
-                    CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
-    ? d : DateOnly.FromDateTime(DateTime.Today);                    // Fallback heute
-
 var all = Directory.GetFiles(root, "*.txt", SearchOption.AllDirectories);   // rekursiv
+
+var parts = name.Split('_');                                     // Datum nur, wenn am Ende gültig
+DateOnly date = parts.Length > 1
+                && DateOnly.TryParseExact(parts[^1], "yyyyMMdd", CultureInfo.InvariantCulture,
+                                          DateTimeStyles.None, out var d)
+    ? d
+    : DateOnly.FromDateTime(DateTime.Today);                     // Fallback heute
 ----
 
 * `parts[^1]` = letztes Element. `MM` = Monat, `mm` = Minuten. `TryParseExact` lehnt `20251399` ab.
+* `File.Exists(path)`, `Directory.Exists(path)`. Relativ → absolut:
+  `Path.IsPathRooted(p) ? p : Path.Combine(AppContext.BaseDirectory, p)`.
 
 === CSV-/Textdatei lesen und schreiben
 
 [source,csharp]
 ----
-var lines   = File.ReadAllLines(fileName);              // Kopfzeile: Titel;10.5   Daten: 3;Text;2391
+// Datei:  Titel;10.5        ← Kopfzeile
+//         3;Text;2391       ← Datenzeilen
+var lines   = File.ReadAllLines(fileName);
 var header  = lines.First().Split(';');
 var entries = lines.Skip(1)
-    .Where(l => !string.IsNullOrWhiteSpace(l))
-    .Select(l => l.Split(';', 3))                       // max. 3 Teile, ';' im letzten Text bleibt
+    .Where(l => !string.IsNullOrWhiteSpace(l))            // leere Zeilen ignorieren
+    .Select(l => l.Split(';', 3))                          // max. 3 Teile, ';' im Text bleibt
     .Select(c => new Entry { Number = int.Parse(c[0]), Text = c[1], Value = int.Parse(c[2]) })
-    .OrderBy(e => e.Number).ToList();
+    .OrderBy(e => e.Number).ThenBy(e => e.Text)
+    .ToList();
 double km = double.Parse(header[1], CultureInfo.InvariantCulture);
 
 var output = new List<string> { $"{title};{km.ToString(CultureInfo.InvariantCulture)}" };
 output.AddRange(entries.Select(e => $"{e.Number};{e.Text};{e.Value}"));
-File.WriteAllLines(fileName, output);                   // überschreibt; AppendAllLines hängt an
-string tags = string.Join(",", item.Tags.Select(t => t.Name));   // Liste als Text "C1,C3"
+File.WriteAllLines(fileName, output);                     // überschreibt; AppendAllLines hängt an
+
+string tags = string.Join(",", item.Tags.Select(t => t.Name));   // Liste als Text "A,B"
 ----
+
+* Dezimalzahlen in Dateien immer mit `InvariantCulture` lesen *und* schreiben.
 
 [[db]]
 == Datenbank und Import
@@ -339,25 +378,25 @@ string tags = string.Join(",", item.Tags.Select(t => t.Name));   // Liste als Te
 // Core/Contracts/IItemRepository.cs  (Methode im Interface UND in der Klasse ergänzen)
 Task<List<ItemDto>> GetOverviewAsync(int? categoryId);
 
-// Core/DTOs/ItemDto.cs
+// Core/DTOs/ItemDto.cs: genau die Spalten der Liste
 public class ItemDto
 {
-    public int Id { get; set; }
-    public string Name { get; set; } = "";
+    public int      Id           { get; set; }
+    public string   Name         { get; set; } = "";
     public DateOnly CreationDate { get; set; }
-    public int? CategoryId { get; set; }
-    public string? Category { get; set; }
-    public int DetailCount { get; set; }
-    public string Tags { get; set; } = "";
-    public double? MinValue { get; set; }                      // Aggregat: nullable (leer → NULL)
+    public int?     CategoryId   { get; set; }
+    public string?  Category     { get; set; }
+    public int      DetailCount  { get; set; }
+    public string   Tags         { get; set; } = "";
+    public double?  MinValue     { get; set; }             // Aggregat nullable (leer → NULL)
 }
 
 // Persistence/ItemRepository.cs
 public async Task<List<ItemDto>> GetOverviewAsync(int? categoryId)
 {
-    IQueryable<Item> query = DbSet.AsNoTracking();            // bzw. _context.Items
+    IQueryable<Item> query = DbSet.AsNoTracking();          // bzw. _context.Items
     if (categoryId != null)
-        query = query.Where(i => i.CategoryId == categoryId);  // Filter läuft als SQL
+        query = query.Where(i => i.CategoryId == categoryId);   // Filter läuft als SQL
 
     return await query
         .OrderBy(i => i.CreationDate)
@@ -368,17 +407,18 @@ public async Task<List<ItemDto>> GetOverviewAsync(int? categoryId)
             CreationDate = i.CreationDate,
             CategoryId   = i.CategoryId,
             Category     = i.Category != null ? i.Category.Name : null,
-            DetailCount  = i.Details!.Count,                                   // COUNT, lädt keine Details
+            DetailCount  = i.Details!.Count,                // COUNT, lädt keine Details
             Tags         = string.Join(",", i.Tags!.OrderBy(t => t.Name).Select(t => t.Name)),
-            MinValue     = i.Details!.Where(d => d.Value != null).Min(d => d.Value),   // Min/Max/Average/Sum
+            MinValue     = i.Details!.Where(d => d.Value != null).Min(d => d.Value),
         })
         .ToListAsync();
 }
 ----
 
 * Alles vor `ToListAsync()` wird SQL → nie die ganze Tabelle laden. `Where` nur anhängen, wenn Filter gesetzt.
-* `Select` in ein DTO lädt nur die angezeigten Spalten. DTOs werden nicht getrackt → zum Ändern per Id neu laden.
-* Nachschlage-Liste für die ComboBox: `await _uow.CategoryRepository.GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name))`.
+* Weitere Aggregate: `.Max(...)`, `.Average(...)` (ignoriert NULL), `.Sum(...)`, `.Count(d => d.Value == null)`.
+* DTOs werden nicht getrackt → zum Ändern die Entity per Id neu laden.
+* Liste für die ComboBox: `await _uow.CategoryRepository.GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name))`.
 
 === UnitOfWork / GenericRepository der Vorlage
 
@@ -397,7 +437,7 @@ public async Task<List<ItemDto>> GetOverviewAsync(int? categoryId)
 
 [source,csharp]
 ----
-public class ImportService : IImportService                       // Persistence; in DI registrieren
+public class ImportService : IImportService              // Persistence; in DI registrieren
 {
     private readonly IUnitOfWork _uow;
     public ImportService(IUnitOfWork uow) => _uow = uow;
@@ -405,61 +445,72 @@ public class ImportService : IImportService                       // Persistence
     public async Task ImportItemAsync(string name, string? description, string? category,
                                       DateOnly date, string fileName)
     {
-        var details = Parser.Parse(await File.ReadAllTextAsync(fileName));   // eigener Parser (Core)
+        var details = Parser.Parse(await File.ReadAllTextAsync(fileName));  // eigener Parser
 
         using var trans = _uow.BeginTransaction();
 
         if (await _uow.ItemRepository.CountAsync(i => i.Name == name) > 0)
             throw new InvalidOperationException($"'{name}' existiert bereits.");
 
+        for (int i = 0; i < details.Count; i++)
+            details[i].SeqNo = i + 1;                    // laufende Nummer ab 1
+
         var item = new Item
         {
             Name         = name,
             Description  = description,
             CreationDate = date,
-            Category     = string.IsNullOrWhiteSpace(category) ? null : await GetOrCreateCategoryAsync(category),
-            Details      = details.Select((d, i) => { d.SeqNo = i + 1; return d; }).ToList(),   // SeqNo ab 1
+            Category     = string.IsNullOrWhiteSpace(category)
+                               ? null
+                               : await GetOrCreateCategoryAsync(category),
+            Details      = details,                      // Navigation-Property, keine Ids
         };
-        await _uow.ItemRepository.AddAsync(item);                   // EIN Add: Details + Category kommen mit
+        await _uow.ItemRepository.AddAsync(item);        // EIN Add: Kinder kommen mit
         await trans.CommitTransactionAsync();
     }
 
-    private async Task<Category> GetOrCreateCategoryAsync(string code)
+    private async Task<Category> GetOrCreateCategoryAsync(string name)
     {
-        var existing = (await _uow.CategoryRepository.GetAsync(c => c.Code == code)).FirstOrDefault();
+        var existing = (await _uow.CategoryRepository.GetAsync(c => c.Name == name))
+                       .FirstOrDefault();
         if (existing != null) return existing;
-        var category = new Category { Code = code, Name = code };
+        var category = new Category { Name = name };
         await _uow.CategoryRepository.AddAsync(category);
         return category;
     }
 
-    public async Task ImportFolderAsync(string root)                // Task 2: alle Dateien eines Ordnerbaums
+    public async Task ImportFolderAsync(string root)    // alle Dateien eines Ordnerbaums
     {
         foreach (var dir in Directory.GetDirectories(root))
             foreach (var file in Directory.GetFiles(dir, "*.txt"))
             {
                 var name  = Path.GetFileNameWithoutExtension(file);
                 var parts = name.Split('_');
-                var date  = parts.Length > 1 && DateOnly.TryParseExact(parts[^1], "yyyyMMdd",
-                                CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
-                            ? d : DateOnly.FromDateTime(DateTime.Today);
-                await ImportItemAsync(name, Path.GetRelativePath(root, file), Path.GetFileName(dir), date, file);
+                var date  = parts.Length > 1
+                            && DateOnly.TryParseExact(parts[^1], "yyyyMMdd",
+                                   CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+                    ? d : DateOnly.FromDateTime(DateTime.Today);
+                await ImportItemAsync(name, Path.GetRelativePath(root, file),
+                                      Path.GetFileName(dir), date, file);
             }
     }
 }
 ----
 
-* Objekte nur über Navigation-Properties verbinden (`Category = ...`, `Details = ...`), keine Ids setzen. Kein `AddRange` für Kinder.
-* Pro Datensatz eine Transaktion → Commit speichert, danach findet `GetOrCreate` die neue Category (keine Duplikate).
+* Objekte nur über Navigation-Properties verbinden (`Category = ...`, `Details = ...`), Ids nicht setzen. Kein `AddRange`.
+* Pro Datensatz eine Transaktion → nach dem Commit findet `GetOrCreate` die neue Category (keine Duplikate).
 * Entity-Listen initialisieren: `public List<Detail> Details { get; set; } = new();`
 
 [source,csharp]
 ----
 // ImportConsoleApp/Program.cs
 Console.WriteLine("Import ...");
-using var scope = AppService.ServiceProvider!.CreateScope();     // bzw. wie in der Vorlage vorgegeben
+using var scope = AppService.ServiceProvider!.CreateScope();   // bzw. wie in der Vorlage
 var import = scope.ServiceProvider.GetRequiredService<IImportService>();
-try   { await import.ImportFolderAsync(Path.Combine(AppContext.BaseDirectory, "ImportData")); }
+try
+{
+    await import.ImportFolderAsync(Path.Combine(AppContext.BaseDirectory, "ImportData"));
+}
 catch (Exception ex) { Console.WriteLine(ex.GetBaseException().Message); }
 ----
 
@@ -467,14 +518,19 @@ catch (Exception ex) { Console.WriteLine(ex.GetBaseException().Message); }
 
 [source,csharp]
 ----
-await using var context = new ApplicationDbContext();          // pro Vorgang ein Context
+await using var context = new ApplicationDbContext();       // pro Vorgang ein Context
 var item = await context.Items
     .Include(i => i.Category)
-    .Include(i => i.Details.OrderBy(d => d.SeqNo))               // ohne Include: null/leer
+    .Include(i => i.Details.OrderBy(d => d.SeqNo))            // ohne Include: null/leer
     .SingleAsync(i => i.Id == id);
 
 await using var tx = await context.Database.BeginTransactionAsync();
-try   { context.Items.Add(newItem); await context.SaveChangesAsync(); await tx.CommitAsync(); }
+try
+{
+    context.Items.Add(newItem);
+    await context.SaveChangesAsync();
+    await tx.CommitAsync();
+}
 catch { await tx.RollbackAsync(); throw; }
 ----
 
@@ -490,7 +546,7 @@ catch { await tx.RollbackAsync(); throw; }
 private string? _name;
 public string? Name { get => _name; set => SetProperty(ref _name, value); }
 
-private int _count;                                     // abhängige Property mitmelden
+private int _count;                                  // abhängige Property mitmelden
 public int Count
 {
     get => _count;
@@ -498,7 +554,7 @@ public int Count
 }
 public bool IsEmpty => Count == 0;
 
-public ObservableCollection<ItemDto> Items { get; } = new();    // nie ersetzen, nur Clear()/Add()
+public ObservableCollection<ItemDto> Items { get; } = new();   // nie ersetzen: Clear()/Add()
 ----
 
 * `List<T>` meldet nichts ans UI, `ObservableCollection<T>` schon. Ändert sich eine Property *eines Elements*,
@@ -517,22 +573,28 @@ public class MainWindowViewModel : BaseViewModel
     {
         _uow = uow;
         FilterCommand  = new RelayCommand(async () => await LoadItemsAsync());
-        DetailsCommand = new RelayCommand(() => Controller?.ShowDetails(SelectedItem!.Id), () => SelectedItem != null);
-        EditCommand    = new RelayCommand(() => IsEditing = true, () => SelectedItem != null && !IsEditing);
+        DetailsCommand = new RelayCommand(() => Controller?.ShowDetails(SelectedItem!.Id),
+                                          () => SelectedItem != null);
+        EditCommand    = new RelayCommand(() => IsEditing = true,
+                                          () => SelectedItem != null && !IsEditing);
         UpdateCommand  = new RelayCommand(async () => await UpdateAsync(), () => IsEditing);
         ImportCommand  = new RelayCommand(async () =>
         {
-            if (Controller?.ShowImport() == true) await InitializeDataAsync();   // nach Import neu laden
+            if (Controller?.ShowImport() == true) await InitializeDataAsync();  // neu laden
         });
     }
 
     #region Properties
-    public ObservableCollection<Category> Categories     { get; } = new();   // Filter mit "<All>"
-    public ObservableCollection<Category> EditCategories { get; } = new();   // Edit mit "<None>"
+    public ObservableCollection<Category> Categories     { get; } = new();  // Filter "<All>"
+    public ObservableCollection<Category> EditCategories { get; } = new();  // Edit "<None>"
     public ObservableCollection<ItemDto>  Items          { get; } = new();
 
     private Category? _selectedCategory;
-    public Category? SelectedCategory { get => _selectedCategory; set => SetProperty(ref _selectedCategory, value); }
+    public Category? SelectedCategory
+    {
+        get => _selectedCategory;
+        set => SetProperty(ref _selectedCategory, value);
+    }
 
     private ItemDto? _selectedItem;
     public ItemDto? SelectedItem
@@ -542,13 +604,17 @@ public class MainWindowViewModel : BaseViewModel
         {
             if (!SetProperty(ref _selectedItem, value)) return;
             // gleiche Instanz wie in ItemsSource suchen, nicht neu erzeugen
-            SelectedEditCategory = EditCategories.FirstOrDefault(c => c.Id == (value?.CategoryId ?? 0));
+            SelectedEditCategory = EditCategories
+                .FirstOrDefault(c => c.Id == (value?.CategoryId ?? 0));
         }
     }
 
     private Category? _selectedEditCategory;
     public Category? SelectedEditCategory
-    { get => _selectedEditCategory; set => SetProperty(ref _selectedEditCategory, value); }
+    {
+        get => _selectedEditCategory;
+        set => SetProperty(ref _selectedEditCategory, value);
+    }
 
     private bool _isEditing;
     public bool IsEditing
@@ -556,7 +622,7 @@ public class MainWindowViewModel : BaseViewModel
         get => _isEditing;
         set { if (SetProperty(ref _isEditing, value)) OnPropertyChanged(nameof(IsNotEditing)); }
     }
-    public bool IsNotEditing => !IsEditing;                 // statt Inverter-Converter
+    public bool IsNotEditing => !IsEditing;              // statt Inverter-Converter
     #endregion
 
     #region Commands
@@ -568,9 +634,10 @@ public class MainWindowViewModel : BaseViewModel
     #endregion
 
     #region Operations
-    public override async Task InitializeDataAsync()         // läuft bei Loaded (Programmstart)
+    public override async Task InitializeDataAsync()      // läuft bei Loaded (Programmstart)
     {
-        var categories = await _uow.CategoryRepository.GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name));
+        var categories = await _uow.CategoryRepository
+            .GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name));
         Categories.Clear();
         Categories.Add(new Category { Id = 0, Name = "<All>" });     // Platzhalter, nie speichern
         EditCategories.Clear();
@@ -584,18 +651,21 @@ public class MainWindowViewModel : BaseViewModel
     {
         try
         {
-            int? filterId = SelectedCategory is { Id: > 0 } c ? c.Id : null;   // "<All>" → kein Filter
+            int? filterId = SelectedCategory is { Id: > 0 } c ? c.Id : null;  // "<All>" → null
             var items = await _uow.ItemRepository.GetOverviewAsync(filterId);
-            Items.Clear();                                                     // sonst doppelt
+            Items.Clear();                                                   // sonst doppelt
             foreach (var i in items) Items.Add(i);
         }
-        catch (Exception ex) { Controller?.ShowMessageBox($"Fehler: {ex.GetBaseException().Message}"); }
+        catch (Exception ex)
+        {
+            Controller?.ShowMessageBox($"Fehler: {ex.GetBaseException().Message}");
+        }
     }
 
     private async Task UpdateAsync()
     {
-        var item = await _uow.ItemRepository.GetByIdAsync(SelectedItem!.Id);         // getrackt laden
-        item!.CategoryId = SelectedEditCategory is { Id: > 0 } c ? c.Id : null;      // "<None>" → null
+        var item = await _uow.ItemRepository.GetByIdAsync(SelectedItem!.Id);     // getrackt
+        item!.CategoryId = SelectedEditCategory is { Id: > 0 } c ? c.Id : null;  // "<None>" → null
         await _uow.SaveChangesAsync();
         IsEditing = false;
         await LoadItemsAsync();
@@ -608,32 +678,42 @@ public class MainWindowViewModel : BaseViewModel
 * `Save` ohne Klammern übergibt die Methode, `Save()` ruft sie auf (Compilerfehler).
 * Async-Lambdas im Command sind `async void` → Fehler immer mit `try/catch` abfangen, sonst Absturz.
 * `SelectedItem` einer ComboBox braucht dieselbe *Instanz* wie in `ItemsSource` → per Id suchen.
+* Bearbeitet wird nur, was `Update` speichert. Andere Felder im Edit-Modus sperren (`IsReadOnly`/`IsEnabled`).
 
 === ViewModel mit Datei (Vorlage A): DTO und Model, Laden, Speichern
 
 [source,csharp]
 ----
-public class Document : NotifyPropertyChanged                  // WPFApp/Models: das, was das UI bindet
+public class Document : NotifyPropertyChanged            // WPFApp/Models: das, was das UI bindet
 {
     private string? _title;
     public string? Title { get => _title; set => SetProperty(ref _title, value); }
+
     public ObservableCollection<EntryRow> Entries { get; } = new();
-    private string? _newTime;                                  // Eingabefelder für neuen Eintrag
+
+    private string? _newTime;                            // Eingabefelder für neuen Eintrag
     public string? NewTime { get => _newTime; set => SetProperty(ref _newTime, value); }
     private string? _newText;
     public string? NewText { get => _newText; set => SetProperty(ref _newText, value); }
 }
-public class EntryRow { public string Time { get; set; } = ""; public string Text { get; set; } = ""; }
+
+public class EntryRow                                    // eine Zeile der Tabelle (nur lesen)
+{
+    public string Time { get; set; } = "";
+    public string Text { get; set; } = "";
+}
 
 public class MainViewModel : NotifyPropertyChanged
 {
-    private readonly DataManager _manager = new();             // Lehrer-Klasse: Datei <-> DTO
+    private readonly DataManager _manager = new();       // Lehrer-Klasse: Datei <-> DTO
     public Document Document { get; } = new();
-    private string? _fileName = Path.Combine(AppContext.BaseDirectory, "Daten.txt");
+
+    private string? _fileName = Path.Combine(AppContext.BaseDirectory, "data.txt");
     public string? FileName { get => _fileName; set => SetProperty(ref _fileName, value); }
 
     public ICommand LoadCommand { get; }
     public ICommand SaveCommand { get; }
+
     public MainViewModel()
     {
         LoadCommand = new RelayCommand(Load, CanLoad);
@@ -641,30 +721,36 @@ public class MainViewModel : NotifyPropertyChanged
     }
 
     public bool CanLoad() => !string.IsNullOrWhiteSpace(FileName) && File.Exists(FileName);
+
     public void Load()
     {
         var dto = _manager.Load(FileName!);
         Document.Title = dto.Title;
-        Document.Entries.Clear();
-        foreach (var e in dto.Entries.OrderBy(e => e.Minute).ThenBy(e => e.Extra))
-            Document.Entries.Add(new EntryRow { Time = (e.Minute, e.Extra).ToTimeText(), Text = e.Text });   // DTO → Anzeige
+        Document.Entries.Clear();                        // sonst doppelt beim 2. Laden
+        foreach (var e in dto.Entries.OrderBy(e => e.Seconds))
+            Document.Entries.Add(new EntryRow
+            {
+                Time = e.Seconds.ToTimeText(),           // DTO → Anzeigeformat (Helper)
+                Text = e.Text,
+            });
     }
 
     public bool CanSave() => !string.IsNullOrWhiteSpace(Document.Title)
-                          && Document.NewTime.IsValidTime() && !string.IsNullOrWhiteSpace(Document.NewText);
+                          && Document.NewTime.IsValidTime()       // Format über Helper prüfen
+                          && !string.IsNullOrWhiteSpace(Document.NewText);
+
     public void Save()
     {
         Document.Entries.Add(new EntryRow { Time = Document.NewTime!, Text = Document.NewText! });
-        _manager.Save(new Logic.DTO.DataSet
+        var dto = new Logic.DTO.DataSet
         {
             Title   = Document.Title!,
-            Entries = Document.Entries.Select(r =>
-            {
-                var (minute, extra) = r.Time.ToTime();                                   // Anzeige → DTO
-                return new Entry { Minute = minute, Extra = extra, Text = r.Text };
-            }).ToArray(),
-        }, FileName!);
-        Document.NewTime = null;                               // Eingabefelder leeren (Test prüft das oft)
+            Entries = Document.Entries
+                .Select(r => new Entry { Seconds = r.Time.ToSeconds(), Text = r.Text })  // → DTO
+                .ToArray(),
+        };
+        _manager.Save(dto, FileName!);
+        Document.NewTime = null;                         // Felder leeren (Test prüft das oft)
         Document.NewText = null;
     }
 }
@@ -674,11 +760,11 @@ public class MainViewModel : NotifyPropertyChanged
 * XAML verschachtelt: `Text="{Binding Document.NewTime, UpdateSourceTrigger=PropertyChanged}"`.
 * Muss die Liste sortiert bleiben: nach dem Hinzufügen `Clear()` + sortiert neu `Add`.
 
-=== Dialog-ViewModel: Import mit Validierung, Details per Id
+=== Dialog-ViewModels: Eingabe mit Validierung, Details per Id
 
 [source,csharp]
 ----
-public class ImportViewModel : ValidatableBaseViewModel          // Base: HasErrors, IsValid, AddError
+public class ImportViewModel : ValidatableBaseViewModel  // Base: HasErrors, IsValid, AddError
 {
     private readonly IImportService _import;
     public IWindowNavigator? Controller { get; set; }
@@ -690,33 +776,39 @@ public class ImportViewModel : ValidatableBaseViewModel          // Base: HasErr
         CloseCommand  = new RelayCommand(() => Controller?.CloseWindow());
     }
 
-    private string _name = "Demo1";                                   // sinnvolle Defaultwerte
+    private string _name = "Sample";                     // sinnvolle Defaultwerte
     [Required(ErrorMessage = "Name is required")]
     public string Name { get => _name; set => SetProperty(ref _name, value); }
 
-    private string? _description = "Demo drawing", _category = "Demo";    // optional → ohne [Required]
+    private string? _description, _category;             // optional → ohne [Required]
     public string? Description { get => _description; set => SetProperty(ref _description, value); }
     public string? Category    { get => _category;    set => SetProperty(ref _category, value); }
 
-    private string _fileName = "ImportData/DemoDrawing1.txt";
+    private string _fileName = "ImportData/sample.txt";
     [Required, CustomValidation(typeof(ImportViewModel), nameof(ValidateFileName))]
     public string FileName { get => _fileName; set => SetProperty(ref _fileName, value); }
 
-    public static ValidationResult? ValidateFileName(string? fileName, ValidationContext context)   // public static!
-        => File.Exists(fileName) ? ValidationResult.Success
-                                 : new ValidationResult("File does not exist", new[] { nameof(FileName) });
+    public static ValidationResult? ValidateFileName(string? fileName, ValidationContext ctx)
+        => File.Exists(fileName)                         // Methode muss public static sein
+            ? ValidationResult.Success
+            : new ValidationResult("File does not exist", new[] { nameof(FileName) });
 
     public ICommand ImportCommand { get; }
     public ICommand CloseCommand  { get; }
 
-    public override Task InitializeDataAsync() { ValidateViewModelProperties(); return Task.CompletedTask; }
+    public override Task InitializeDataAsync()
+    {
+        ValidateViewModelProperties();                   // sonst IsValid bis zur 1. Eingabe falsch
+        return Task.CompletedTask;
+    }
 
     private async Task ImportAsync()
     {
         try
         {
-            await _import.ImportItemAsync(Name, Description, Category, DateOnly.FromDateTime(DateTime.Today), FileName);
-            Controller?.CloseWindow();                                 // DialogResult = true → Aufrufer lädt neu
+            var today = DateOnly.FromDateTime(DateTime.Today);
+            await _import.ImportItemAsync(Name, Description, Category, today, FileName);
+            Controller?.CloseWindow();                   // DialogResult = true → Aufrufer lädt neu
         }
         catch (Exception ex) { Controller?.ShowMessageBox(ex.GetBaseException().Message); }
     }
@@ -725,13 +817,14 @@ public class ImportViewModel : ValidatableBaseViewModel          // Base: HasErr
 public class DetailViewModel : BaseViewModel
 {
     private readonly IUnitOfWork _uow;
+    public IWindowNavigator? Controller { get; set; }
+    public int ItemId { get; set; }                      // vom Navigator VOR ShowDialog gesetzt
+
     public DetailViewModel(IUnitOfWork uow)
     {
         _uow         = uow;
         CloseCommand = new RelayCommand(() => Controller?.CloseWindow());
     }
-    public IWindowNavigator? Controller { get; set; }
-    public int ItemId { get; set; }                                    // vom Navigator VOR ShowDialog gesetzt
 
     private Item? _item;
     public Item? Item { get => _item; set => SetProperty(ref _item, value); }
@@ -742,13 +835,15 @@ public class DetailViewModel : BaseViewModel
 }
 ----
 
-* Weitere Attribute: `[StringLength(50, MinimumLength = 2)]`, `[Range(1, 5)]`, `[RegularExpression(@"^\d+'$", ErrorMessage = "Format: 34'")]`.
+* Weitere Attribute: `[StringLength(50, MinimumLength = 2)]`, `[Range(1, 5)]`,
+  `[RegularExpression(@"^\d+$", ErrorMessage = "Nur Ziffern")]`.
 * Geprüft werden nur Properties *dieses* ViewModels. Eigene Regel: nach `ValidateViewModelProperties()` `AddError(nameof(X), "...")`.
-* Ohne Vorlage: `INotifyDataErrorInfo` lohnt nicht. Einfach `CanExecute` mit Prüfung (`() => File.Exists(FileName)`).
-* Fehlertext im XAML: `<TextBox x:Name="fileBox" Text="{Binding FileName, UpdateSourceTrigger=PropertyChanged, ValidatesOnNotifyDataErrors=True}"/>`
+* Ohne Vorlage reicht meist ein `CanExecute` mit Prüfung, z. B. `() => File.Exists(FileName)`.
+* Fehlertext anzeigen:
+  `<TextBox x:Name="fileBox" Text="{Binding FileName, UpdateSourceTrigger=PropertyChanged, ValidatesOnNotifyDataErrors=True}"/>`
   + `<TextBlock Foreground="Red" Text="{Binding (Validation.Errors)/ErrorContent, ElementName=fileBox}"/>`.
 
-=== Async: UI friert nicht ein (Suche in Dateien)
+=== Async: UI bleibt bedienbar (Beispiel: Dateien durchsuchen)
 
 [source,csharp]
 ----
@@ -757,78 +852,92 @@ private bool _isBusy;
 public bool IsBusy { get => _isBusy; set => SetProperty(ref _isBusy, value); }
 
 SearchCommand = new RelayCommand(async () => await SearchAsync(),
-                                 () => !IsBusy && !string.IsNullOrEmpty(SearchText) && Directory.Exists(Folder));
+    () => !IsBusy && !string.IsNullOrEmpty(SearchText) && Directory.Exists(Folder));
 
-public async Task SearchAsync()                                     // Task → im Test awaitbar
+public async Task SearchAsync()                          // Task → im Test awaitbar
 {
     IsBusy = true;
     Result = "";
     try
     {
-        var files = await Task.Run(() =>                            // Dateisystem im Hintergrund
-            Directory.GetFiles(Folder!, Mask ?? "*.*", SearchOption.AllDirectories));   // rekursiv
+        var files = await Task.Run(() =>                 // CPU/Dateisystem im Hintergrund
+            Directory.GetFiles(Folder!, Mask ?? "*.*", SearchOption.AllDirectories));
         var sb = new StringBuilder();
         foreach (var file in files)
         {
-            var lines = await File.ReadAllLinesAsync(file);         // I/O async, kein Task.Run nötig
+            var lines = await File.ReadAllLinesAsync(file);   // I/O ist schon async
             for (int i = 0; i < lines.Length; i++)
                 if (lines[i].Contains(SearchText!, StringComparison.OrdinalIgnoreCase))
                     sb.AppendLine($"{file}:{i + 1}: {lines[i]}");
         }
-        Result = sb.ToString();                                     // nach await wieder im UI-Thread
+        Result = sb.ToString();                          // nach await wieder im UI-Thread
     }
     catch (Exception ex) { Result = ex.Message; }
-    finally { IsBusy = false; CommandManager.InvalidateRequerySuggested(); }
+    finally
+    {
+        IsBusy = false;
+        CommandManager.InvalidateRequerySuggested();     // Button wieder aktivieren
+    }
 }
 ----
 
 * `await Task.Delay(…)` statt `Thread.Sleep`. Nie `.Result`/`.Wait()` (Deadlock). Keine Collection in `Task.Run` ändern.
-* CPU-Arbeit: `var r = await Task.Run(() => Heavy(x));` und das Ergebnis erst *nach* dem `await` zuweisen.
-* Live-Ergebnisse: `var progress = new Progress<string>(line => Lines.Add(line));` an `Task.Run` übergeben, `progress.Report(...)`.
-* Takt im UI-Thread: `var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) }; t.Tick += (_, _) => Seconds += 1; t.Start();`
+* CPU-Arbeit: `var r = await Task.Run(() => Heavy(x));`, das Ergebnis erst *nach* dem `await` zuweisen.
+* Zwischenergebnisse: `var progress = new Progress<string>(line => Lines.Add(line));` an die Arbeit übergeben,
+  dort `progress.Report(...)` (läuft automatisch im UI-Thread).
+* Takt im UI-Thread: `var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };`
+  `t.Tick += (_, _) => Tick(); t.Start();`.
 
-=== Viele gleiche Buttons, ein Command (Spielfeld, Rechner)
+=== Viele gleiche Buttons, ein Command (Raster, Tastenfeld)
 
 [source,csharp]
 ----
-// Tic-Tac-Toe: Index-Binding auf ObservableCollection (Array aktualisiert NICHT)
+// Raster: Index-Binding auf ObservableCollection (ein Array aktualisiert NICHT)
 public ObservableCollection<string> Cells { get; } = new(Enumerable.Repeat("", 9));
-PlayCommand = new RelayCommand(p => Play(int.Parse((string)p!)),
-                               p => int.TryParse(p as string, out var i) && Cells[i] == "" && Winner == null);
-private static readonly int[][] Lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
-private bool HasWon(string p) => Lines.Any(l => l.All(i => Cells[i] == p));
 
-// Rechner: Operation als Lambda merken, bei "=" ausführen
+CellCommand = new RelayCommand(p => OnCell(int.Parse((string)p!)),       // "0".."8"
+                               p => int.TryParse(p as string, out var i) && Cells[i] == "");
+
+// Muster im Raster prüfen (z. B. Reihen/Spalten/Diagonalen eines 3x3-Feldes)
+private static readonly int[][] Lines =
+    [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+private bool AllSame(string v) => Lines.Any(l => l.All(i => Cells[i] == v));
+
+// Tastenfeld: Eingabe sammeln, Operation als Lambda merken, später ausführen
 private Func<double, double, double>? _op;
-DigitCommand    = new RelayCommand(p =>
+InputCommand = new RelayCommand(p =>
 {
-    Display    = _newNumber || Display == "0" ? (string)p! : Display + p;
-    _newNumber = false;
+    Display    = _newInput || Display == "0" ? (string)p! : Display + p;
+    _newInput  = false;
 });
 OperatorCommand = new RelayCommand(p =>
 {
     _left = double.Parse(Display);
-    _op = (string)p! switch { "+" => (a, b) => a + b, "-" => (a, b) => a - b,
-                              "*" => (a, b) => a * b, "/" => (a, b) => a / b, _ => null };
-    _newNumber = true;
+    _op = (string)p! switch
+    {
+        "+" => (a, b) => a + b, "-" => (a, b) => a - b,
+        "*" => (a, b) => a * b, "/" => (a, b) => a / b,
+        _   => null,
+    };
+    _newInput = true;
 });
-EqualsCommand = new RelayCommand(() =>
+ExecuteCommand = new RelayCommand(() =>
 {
     var r = _op!(_left, double.Parse(Display));
-    Display = double.IsFinite(r) ? r.ToString() : "Error";
-    _op = null; _newNumber = true;                       // nächste Ziffer beginnt neue Zahl
+    Display   = double.IsFinite(r) ? r.ToString() : "Error";   // "/ 0" liefert Infinity
+    _op       = null;
+    _newInput = true;
 }, () => _op != null);
 
-// HP-/UPN-Rechner: Stack
-var stack = new Stack<double>(); stack.Push(3); double top = stack.Pop(); double peek = stack.Peek();
+var stack = new Stack<double>();                         // LIFO: Push, Pop, Peek
 ----
 
 [source,xml]
 ----
 <Window.Resources>
     <Style x:Key="Cell" TargetType="Button">
-        <Setter Property="Command" Value="{Binding PlayCommand}"/>   <!-- Command im Style -->
-        <Setter Property="FontSize" Value="32"/>
+        <Setter Property="Command" Value="{Binding CellCommand}"/>   <!-- Command im Style -->
+        <Setter Property="Margin" Value="2"/>
     </Style>
 </Window.Resources>
 <UniformGrid Rows="3" Columns="3">
@@ -838,29 +947,28 @@ var stack = new Stack<double>(); stack.Push(3); double top = stack.Pop(); double
 ----
 
 * `CommandParameter="7"` kommt als `string` → `int.Parse`, kein `(int)`-Cast. Ohne Parameter ist er `null`.
-* `/ 0` bei `double` → `Infinity` (keine Exception) → `double.IsFinite` prüfen.
-* Tasten: `<Window.InputBindings><KeyBinding Key="D7" Command="{Binding DigitCommand}" CommandParameter="7"/></Window.InputBindings>`
+* Tasten: `<Window.InputBindings><KeyBinding Key="D7" Command="{Binding InputCommand}" CommandParameter="7"/></Window.InputBindings>`
   (`D0`–`D9`, `NumPad0`–`NumPad9`, `Enter`, `Modifiers="Control"`).
 
-*Ohne MVVM (Lehrziel „Event-Handling“):* ein Handler für viele Buttons im Code-Behind.
+*Ohne MVVM (Event-Handling):* ein Handler für viele Buttons im Code-Behind.
 
 [source,xml]
 ----
 <TextBlock x:Name="Display" Text="0"/>
-<Button Content="7" Click="Digit_Click"/>
+<Button Content="7" Click="Input_Click"/>
 <Button Content="+" Click="Operator_Click"/>
 ----
 
 [source,csharp]
 ----
-private void Digit_Click(object sender, RoutedEventArgs e)
+private void Input_Click(object sender, RoutedEventArgs e)
 {
-    string digit = (string)((Button)sender).Content;          // welcher Button? (oder Tag="...")
-    Display.Text = _newNumber || Display.Text == "0" ? digit : Display.Text + digit;
-    _newNumber   = false;
+    string value = (string)((Button)sender).Content;     // welcher Button? (oder Tag="...")
+    Display.Text = _newInput || Display.Text == "0" ? value : Display.Text + value;
+    _newInput    = false;
 }
-// Operator_Click / Equals_Click genauso wie die Commands oben, nur mit Display.Text
-MessageBox.Show("Division durch 0", "Fehler", MessageBoxButton.OK, MessageBoxImage.Error);
+// weitere Handler genauso wie die Commands oben, nur mit Display.Text
+MessageBox.Show("Text", "Titel", MessageBoxButton.OK, MessageBoxImage.Error);
 ----
 
 [[fenster]]
@@ -884,11 +992,11 @@ private void Application_Startup(object sender, StartupEventArgs e)
     AppService.ServiceCollection
         .AddSingleton(configuration)
         .AddAssemblyByName(n => n.EndsWith("ViewModel"), ServiceLifetime.Transient,
-                           typeof(ViewModels.MainWindowViewModel).Assembly)   // alle ...ViewModel
+                           typeof(ViewModels.MainWindowViewModel).Assembly)  // alle ...ViewModel
         .AddDbContext<ApplicationDbContext>(o => o.UseSqlServer(connectionString))
         .AddScoped<IUnitOfWork, UnitOfWork>()
         .AddTransient<IImportService, ImportService>()
-        .AddTransient<MainWindow>()                                            // JEDES Fenster
+        .AddTransient<MainWindow>()                       // JEDES Fenster
         .AddTransient<DetailWindow>()
         .AddTransient<ImportWindow>();
     AppService.BuildServiceProvider();
@@ -906,7 +1014,7 @@ private void Application_Startup(object sender, StartupEventArgs e)
 ----
 public partial class DetailWindow : Window
 {
-    public DetailWindow(DetailViewModel viewModel)                     // DI liefert das ViewModel
+    public DetailWindow(DetailViewModel viewModel)       // DI liefert das ViewModel
     {
         InitializeComponent();
         viewModel.Controller = new WindowNavigator(this);
@@ -923,8 +1031,8 @@ public partial class DetailWindow : Window
 [source,csharp]
 ----
 // Wpf.ViewModels/IWindowNavigator.cs
-public interface IWindowNavigator : IBaseWindowNavigator     // erbt CloseWindow, ShowMessageBox, AskYesNoMessageBox
-{
+public interface IWindowNavigator : IBaseWindowNavigator
+{                                    // erbt CloseWindow, ShowMessageBox, AskYesNoMessageBox
     void ShowDetails(int itemId);
     bool ShowImport();
 }
@@ -936,9 +1044,9 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
     public void ShowDetails(int itemId)
     {
-        using var scope  = AppService.ServiceProvider!.CreateScope();       // eigener DbContext
+        using var scope  = AppService.ServiceProvider!.CreateScope();   // eigener DbContext
         var       window = scope.ServiceProvider.GetRequiredService<DetailWindow>();
-        ((DetailViewModel)window.DataContext).ItemId = itemId;              // Parameter VOR ShowDialog
+        ((DetailViewModel)window.DataContext).ItemId = itemId;          // VOR ShowDialog
         window.Owner = Window;
         window.ShowDialog();
     }
@@ -948,13 +1056,13 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
         using var scope  = AppService.ServiceProvider!.CreateScope();
         var       window = scope.ServiceProvider.GetRequiredService<ImportWindow>();
         window.Owner = Window;
-        return window.ShowDialog() == true;                                  // true = importiert
+        return window.ShowDialog() == true;                              // true = OK
     }
 }
 ----
 
 * Pro Dialog: Methode im Interface (`Wpf.ViewModels`) + Umsetzung (`Wpf`) + Fenster in `App.xaml.cs` registrieren.
-* `CloseWindow()` setzt `DialogResult = true`. Das „X“ liefert `false`.
+* `CloseWindow()` setzt `DialogResult = true`. Das „X“ liefert `false`. Ja/Nein: `Controller?.AskYesNoMessageBox(caption, text)`.
 * Ohne Vorlage: im ViewModel `public Action<bool>? CloseAction { get; set; }`, beim Öffnen
   `vm.CloseAction = r => window.DialogResult = r;` und `new DetailWindow { DataContext = vm, Owner = owner }.ShowDialog()`.
 
@@ -965,14 +1073,15 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
 [source,xml]
 ----
-<Window x:Class="Wpf.MainWindow" ... Title="Item Overview" Height="450" Width="800"
+<Window x:Class="Wpf.MainWindow" ... Title="Overview" Height="450" Width="800"
         xmlns:vm="clr-namespace:Wpf.ViewModels;assembly=Wpf.ViewModels"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="d"
-        d:DataContext="{d:DesignInstance Type=vm:MainWindowViewModel}">
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DataContext="{d:DesignInstance Type=vm:MainWindowViewModel}">
     <Window.Resources>
         <Style TargetType="Button">
-            <Setter Property="Margin" Value="5"/><Setter Property="Padding" Value="10,2"/>
+            <Setter Property="Margin" Value="5"/>
+            <Setter Property="Padding" Value="10,2"/>
         </Style>
         <Style TargetType="ComboBox"><Setter Property="Margin" Value="5"/></Style>
         <Style TargetType="TextBox"><Setter Property="Margin" Value="5"/></Style>
@@ -987,33 +1096,38 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
         <StackPanel Grid.Row="0" Orientation="Horizontal">
             <Label Content="Category:"/>
-            <ComboBox Width="150" ItemsSource="{Binding Categories}" SelectedItem="{Binding SelectedCategory}"
-                      DisplayMemberPath="Name"/>
+            <ComboBox Width="150" ItemsSource="{Binding Categories}"
+                      SelectedItem="{Binding SelectedCategory}" DisplayMemberPath="Name"/>
             <Button Content="Filter" Command="{Binding FilterCommand}"/>
         </StackPanel>
 
-        <ListView Grid.Row="1" Margin="5" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
-                  IsEnabled="{Binding IsNotEditing}">
+        <ListView Grid.Row="1" Margin="5" ItemsSource="{Binding Items}"
+                  SelectedItem="{Binding SelectedItem}" IsEnabled="{Binding IsNotEditing}">
             <ListView.View>
                 <GridView>
-                    <GridViewColumn Header="Date"     DisplayMemberBinding="{Binding CreationDate, StringFormat=d}"/>
-                    <GridViewColumn Header="Name"     DisplayMemberBinding="{Binding Name}" Width="160"/>
+                    <GridViewColumn Header="Date"
+                        DisplayMemberBinding="{Binding CreationDate, StringFormat=d}"/>
+                    <GridViewColumn Header="Name"     DisplayMemberBinding="{Binding Name}"/>
                     <GridViewColumn Header="Category" DisplayMemberBinding="{Binding Category}"/>
-                    <GridViewColumn Header="Details"  DisplayMemberBinding="{Binding DetailCount}"/>
+                    <GridViewColumn Header="Count"    DisplayMemberBinding="{Binding DetailCount}"/>
                     <GridViewColumn Header="Tags"     DisplayMemberBinding="{Binding Tags}"/>
-                    <GridViewColumn Header="Min"      DisplayMemberBinding="{Binding MinValue, TargetNullValue='-'}"/>
+                    <GridViewColumn Header="Min"
+                        DisplayMemberBinding="{Binding MinValue, TargetNullValue='-'}"/>
                 </GridView>
             </ListView.View>
         </ListView>
 
         <Grid Grid.Row="2">
-            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="200"/></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition/><ColumnDefinition Width="200"/>
+            </Grid.ColumnDefinitions>
             <Label Content="Category:"/>
-            <ComboBox Grid.Column="1" ItemsSource="{Binding EditCategories}" DisplayMemberPath="Name"
-                      SelectedItem="{Binding SelectedEditCategory}" IsEnabled="{Binding IsEditing}"/>
+            <ComboBox Grid.Column="1" ItemsSource="{Binding EditCategories}"
+                      DisplayMemberPath="Name" SelectedItem="{Binding SelectedEditCategory}"
+                      IsEnabled="{Binding IsEditing}"/>
         </Grid>
 
-        <UniformGrid Grid.Row="3" Rows="1">                <!-- gleich breite Buttons -->
+        <UniformGrid Grid.Row="3" Rows="1">               <!-- gleich breite Buttons -->
             <Button Content="Details" Command="{Binding DetailsCommand}"/>
             <Button Content="Edit"    Command="{Binding EditCommand}"/>
             <Button Content="Update"  Command="{Binding UpdateCommand}"/>
@@ -1025,7 +1139,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
 * Layout nachbauen: Zeilen zählen, nur die Zeile mit der Liste `+*+`, alle anderen `Auto`.
 * `<RowDefinition/>` = `+*+`. `2*` = doppelter Anteil, Zahl = Pixel. `Grid.Row`/`Column` 0-basiert, `RowSpan`/`ColumnSpan` verbinden.
-* `TextBox` statt `ComboBox` sperren: `IsReadOnly="{Binding IsNotEditing}"`. `ComboBox` hat kein `IsReadOnly` → `IsEnabled`.
+* `TextBox` sperren: `IsReadOnly="{Binding IsNotEditing}"`. `ComboBox` hat kein `IsReadOnly` → `IsEnabled`.
 * `<` in Attributen als `&lt;` schreiben (`"&lt;All&gt;"`).
 
 === Formular / Dialog (Label + Eingabe bündig)
@@ -1033,47 +1147,52 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 [source,xml]
 ----
 <Grid Margin="5">
-    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
     <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>    <!-- Zeichenfläche / Liste -->
         <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
 
-    <Label Grid.Row="0" Content="Name:"/>
-    <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
-    <Label Grid.Row="1" Content="Filename:"/>
-    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding FileName, UpdateSourceTrigger=PropertyChanged}"/>
-    <Label Grid.Row="2" Content="CreationDate:"/>
+    <Label   Grid.Row="0" Content="Name:"/>
+    <TextBox Grid.Row="0" Grid.Column="1"
+             Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+    <Label   Grid.Row="1" Content="Filename:"/>
+    <TextBox Grid.Row="1" Grid.Column="1"
+             Text="{Binding FileName, UpdateSourceTrigger=PropertyChanged}"/>
+    <Label     Grid.Row="2" Content="Date:"/>
     <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Item.CreationDate, StringFormat=d}"/>
 
     <Border Grid.Row="3" Grid.ColumnSpan="2" BorderBrush="Black" BorderThickness="1">
-        <controls:PreviewControl Details="{Binding Item.Details}"/>   <!-- siehe Custom Draw -->
+        <controls:PreviewControl Segments="{Binding Segments}"/>   <!-- Custom Draw -->
     </Border>
 
     <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal">
-        <Button Content="Import" Command="{Binding ImportCommand}" Width="100"/>
-        <Button Content="Close"  Command="{Binding CloseCommand}"  Width="100" IsCancel="True"/>
+        <Button Content="OK"    Command="{Binding ImportCommand}" Width="100"/>
+        <Button Content="Close" Command="{Binding CloseCommand}"  Width="100" IsCancel="True"/>
     </StackPanel>
 </Grid>
 ----
 
-* `UpdateSourceTrigger=PropertyChanged` bei *jeder* TextBox, von der ein `CanExecute` abhängt (Standard `LostFocus` → Button bleibt grau).
+* `UpdateSourceTrigger=PropertyChanged` bei *jeder* TextBox, von der ein `CanExecute` abhängt
+  (Standard `LostFocus` → Button bleibt beim Tippen grau).
 * Fenster an Inhalt anpassen: `SizeToContent="WidthAndHeight"`, `ResizeMode="NoResize"`. `IsDefault="True"` = Enter.
 
 === DataGrid statt ListView
 
 [source,xml]
 ----
-<DataGrid Grid.Row="1" ItemsSource="{Binding Document.Entries}" SelectedItem="{Binding SelectedEntry}"
+<DataGrid Grid.Row="1" ItemsSource="{Binding Document.Entries}"
+          SelectedItem="{Binding SelectedEntry}"
           AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
           HeadersVisibility="Column" SelectionMode="Single" VerticalScrollBarVisibility="Visible">
     <DataGrid.Columns>
-        <DataGridTextColumn Header="Time"        Width="60" Binding="{Binding Time}"/>
-        <DataGridTextColumn Header="Event"       Width="Auto" Binding="{Binding Text}"/>
-        <DataGridTextColumn Header="Information" Width="*"  Binding="{Binding Information}"/>
-        <DataGridTextColumn Header="Preis"       Binding="{Binding Price, StringFormat=N2}"/>
-        <DataGridCheckBoxColumn Header="Aktiv"   Binding="{Binding IsActive}"/>
+        <DataGridTextColumn Header="Time"   Width="60"   Binding="{Binding Time}"/>
+        <DataGridTextColumn Header="Text"   Width="*"    Binding="{Binding Text}"/>
+        <DataGridTextColumn Header="Price"  Binding="{Binding Price, StringFormat=N2}"/>
+        <DataGridCheckBoxColumn Header="Active" Binding="{Binding IsActive}"/>
     </DataGrid.Columns>
 </DataGrid>
 ----
@@ -1087,7 +1206,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 |===
 | `{Binding Name, UpdateSourceTrigger=PropertyChanged}` | bei jedem Tastendruck zurückschreiben
 | `{Binding Status, Mode=OneWay}` | nur anzeigen (`TwoWay` Standard bei `TextBox.Text`, `IsChecked`, `SelectedItem`)
-| `{Binding Price, StringFormat=N2}` · `StringFormat=d` · `StringFormat='Züge: {0}'` | formatieren
+| `StringFormat=N2` · `StringFormat=d` · `StringFormat=dd.MM.yyyy` · `StringFormat='Anzahl: {0}'` | formatieren
 | `{Binding Description, TargetNullValue='-'}` | Wert ist `null`
 | `{Binding Category.Name, FallbackValue='(keine)'}` | Pfad nicht auflösbar (Zwischenobjekt `null`)
 | `{Binding ElementName=slider, Path=Value}` | an anderes Control
@@ -1104,22 +1223,24 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 [source,xml]
 ----
 <Window.Resources>
-    <Style TargetType="Button"><Setter Property="Margin" Value="2"/></Style>       <!-- implizit: alle Buttons -->
+    <Style TargetType="Button">                          <!-- implizit: alle Buttons -->
+        <Setter Property="Margin" Value="2"/>
+    </Style>
     <Style x:Key="Accent" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-        <Setter Property="Background" Value="SteelBlue"/>      <!-- Style="{StaticResource Accent}" -->
+        <Setter Property="Background" Value="SteelBlue"/>  <!-- Style="{StaticResource Accent}" -->
     </Style>
 </Window.Resources>
 
-<!-- Farbe abhängig von Daten: Standardwert im Style, NICHT als Attribut am Element -->
-<TextBlock Text="{Binding Winner}">
+<!-- Aussehen abhängig von Daten: Standardwert im Style, NICHT als Attribut am Element -->
+<TextBlock Text="{Binding Status}">
     <TextBlock.Style>
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="Black"/>
             <Style.Triggers>
-                <DataTrigger Binding="{Binding Winner}" Value="X">
+                <DataTrigger Binding="{Binding IsError}" Value="True">
                     <Setter Property="Foreground" Value="Red"/>
                 </DataTrigger>
-                <DataTrigger Binding="{Binding Winner}" Value="{x:Null}">
+                <DataTrigger Binding="{Binding Status}" Value="{x:Null}">
                     <Setter Property="Foreground" Value="Gray"/>
                 </DataTrigger>
             </Style.Triggers>
@@ -1145,19 +1266,19 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
   `Background="{Binding StatusColor}"` mit `public string StatusColor => IsOk ? "LightGreen" : "IndianRed";`.
 * Styles für alle Fenster: in `App.xaml` unter `<Application.Resources>` (oder `ResourceDictionary` mit `MergedDictionaries`).
 
-=== ItemsControl mit Template (dynamisches Raster)
+=== ItemsControl mit Template (dynamische Liste/Raster)
 
 [source,xml]
 ----
 <ItemsControl ItemsSource="{Binding Cells}">
     <ItemsControl.ItemsPanel>
-        <ItemsPanelTemplate><UniformGrid Columns="3"/></ItemsPanelTemplate>   <!-- oder WrapPanel, Canvas -->
+        <ItemsPanelTemplate><UniformGrid Columns="3"/></ItemsPanelTemplate>  <!-- / WrapPanel -->
     </ItemsControl.ItemsPanel>
     <ItemsControl.ItemTemplate>
-        <DataTemplate>                                                         <!-- DataContext = Element -->
-            <Button Content="{Binding Text}" Margin="2"
-                    Command="{Binding DataContext.PlayCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                    CommandParameter="{Binding}"/>
+        <DataTemplate>                                   <!-- DataContext = Element -->
+            <Button Content="{Binding Text}" Margin="2" CommandParameter="{Binding}"
+                    Command="{Binding DataContext.CellCommand,
+                              RelativeSource={RelativeSource AncestorType=Window}}"/>
         </DataTemplate>
     </ItemsControl.ItemTemplate>
 </ItemsControl>
@@ -1180,37 +1301,29 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
 * `Margin="links,oben,rechts,unten"`, `Margin="10,5"` = links/rechts 10, oben/unten 5. `Padding` = innen.
 * Controls: `CheckBox IsChecked`, `RadioButton GroupName`, `Slider Value`, `ProgressBar IsIndeterminate="{Binding IsBusy}"`,
-  `TextBox IsReadOnly TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"` (mehrzeilige Ausgabe).
+  mehrzeilige Ausgabe: `TextBox IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"`.
 
 [[draw]]
 == Custom Draw (OnRender)
 
-=== UserControl mit DependencyProperty: Zeichnung skaliert
+=== UserControl mit DependencyProperty: Linien skaliert zeichnen
 
 [source,csharp]
 ----
-// Wpf/Controls/PreviewControl.xaml(.cs) - Hinzufügen → Benutzersteuerelement (UserControl)
+public record Segment(Point From, Point To, Brush? Brush);   // Brush null = nicht zeichnen
+
+// Wpf/Controls/PreviewControl.xaml(.cs): Hinzufügen → Benutzersteuerelement (UserControl)
 public partial class PreviewControl : UserControl
 {
-    public static readonly DependencyProperty DetailsProperty = DependencyProperty.Register(
-        nameof(Details), typeof(IEnumerable<Detail>), typeof(PreviewControl),
-        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));   // neu zeichnen
+    public static readonly DependencyProperty SegmentsProperty = DependencyProperty.Register(
+        nameof(Segments), typeof(IList<Segment>), typeof(PreviewControl),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
-    public IEnumerable<Detail>? Details                                 // bindbar
+    public IList<Segment>? Segments                      // bindbar
     {
-        get => (IEnumerable<Detail>?)GetValue(DetailsProperty);
-        set => SetValue(DetailsProperty, value);
+        get => (IList<Segment>?)GetValue(SegmentsProperty);
+        set => SetValue(SegmentsProperty, value);
     }
-
-    //  0 1 2
-    //  7 · 3      Reihenfolge wie in der Angabe, y wächst nach UNTEN → "oben" = Dy -1
-    //  6 5 4
-    private static readonly (int Dx, int Dy)[] Steps =
-        { (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0) };
-
-    private static readonly Brush[] Palette =
-        { Brushes.Red, Brushes.Orange, Brushes.Gold, Brushes.Green,
-          Brushes.Blue, Brushes.Purple, Brushes.Violet, Brushes.Black };
 
     public PreviewControl() => InitializeComponent();
 
@@ -1218,31 +1331,22 @@ public partial class PreviewControl : UserControl
     {
         base.OnRender(dc);
         dc.DrawRectangle(Brushes.White, null, new Rect(0, 0, ActualWidth, ActualHeight));
-        if (Details == null || !Details.Any()) return;
+        if (Segments == null || Segments.Count == 0) return;
 
-        // 1. Linien in Rohkoordinaten berechnen (Start 0,0)
-        var lines = new List<(Point From, Point To, Brush? Brush)>();
-        var pos   = new Point(0, 0);
-        foreach (var d in Details.OrderBy(d => d.SeqNo))
-        {
-            var (dx, dy) = Steps[d.Direction];
-            var next     = new Point(pos.X + dx * d.Repeat, pos.Y + dy * d.Repeat);
-            lines.Add((pos, next, d.Color is int c ? Palette[c % Palette.Length] : null));   // null = nicht zeichnen
-            pos = next;
-        }
+        // 1. Bounding Box der Rohkoordinaten
+        var pts = Segments.SelectMany(s => new[] { s.From, s.To }).ToList();
+        double minX = pts.Min(p => p.X), maxX = pts.Max(p => p.X);
+        double minY = pts.Min(p => p.Y), maxY = pts.Max(p => p.Y);
 
-        // 2. Bounding Box + Faktor (Math.Min → Seitenverhältnis bleibt, Max(...,1) → keine Division durch 0)
-        var pts = lines.SelectMany(l => new[] { l.From, l.To }).ToList();
-        double minX = pts.Min(p => p.X), maxX = pts.Max(p => p.X), minY = pts.Min(p => p.Y), maxY = pts.Max(p => p.Y);
-        const double m = 10;
-        double scale = Math.Min((ActualWidth - 2 * m) / Math.Max(maxX - minX, 1),
+        // 2. Faktor: Math.Min → Seitenverhältnis bleibt, Max(...,1) → keine Division durch 0
+        const double m = 10;                             // Rand
+        double scale = Math.Min((ActualWidth  - 2 * m) / Math.Max(maxX - minX, 1),
                                 (ActualHeight - 2 * m) / Math.Max(maxY - minY, 1));
         Point ToScreen(Point p) => new((p.X - minX) * scale + m, (p.Y - minY) * scale + m);
 
         // 3. zeichnen
-        foreach (var (from, to, brush) in lines)
-            if (brush != null)
-                dc.DrawLine(new Pen(brush, 1), ToScreen(from), ToScreen(to));
+        foreach (var s in Segments.Where(s => s.Brush != null))
+            dc.DrawLine(new Pen(s.Brush, 1), ToScreen(s.From), ToScreen(s.To));
     }
 }
 ----
@@ -1251,21 +1355,52 @@ public partial class PreviewControl : UserControl
 ----
 <Window ... xmlns:controls="clr-namespace:Wpf.Controls">
 <Border Grid.Row="3" BorderBrush="Black" BorderThickness="1">
-    <controls:PreviewControl Details="{Binding Item.Details}"/>
+    <controls:PreviewControl Segments="{Binding Segments}"/>
 </Border>
 ----
 
-* Normale C#-Properties sind *nicht* bindbar → `DependencyProperty` (Muster oben). `AffectsRender`: neuer Wert → `OnRender`.
-  Bei Fenster-Größenänderung wird ebenfalls neu gezeichnet.
-* `DrawLine(pen, p1, p2)`, `DrawRectangle(brush, pen, rect)`, `DrawEllipse(brush, pen, center, rx, ry)`,
-  `DrawText(new FormattedText(...), point)`. `Pen` = Linie (Farbe + Dicke), `Brush` = Füllung.
-* Winkel statt Richtungsindex: `x2 = x + len * Math.Cos(rad); y2 = y - len * Math.Sin(rad);` mit `rad = deg * Math.PI / 180`.
+* Normale C#-Properties sind *nicht* bindbar → `DependencyProperty` (Muster oben). `AffectsRender`: neuer Wert → `OnRender`,
+  bei Fenster-Größenänderung wird ebenfalls neu gezeichnet. Typ der Property = was das ViewModel liefert.
+* Zeichnen: `DrawLine(pen, p1, p2)`, `DrawRectangle(brush, pen, rect)`, `DrawEllipse(brush, pen, center, rx, ry)`.
+  `Pen` = Linie (Farbe + Dicke), `Brush` = Füllung. Y wächst nach *unten*.
+* Im ViewModel die `Segments` als `List<Segment>` berechnen und *neu zuweisen* (nicht nur ändern), damit neu gezeichnet wird.
+
+=== Daten in Linien umrechnen (Richtung, Winkel, Farbe)
+
+[source,csharp]
+----
+// Richtung als Index: Reihenfolge wie in der Angabe, z. B.   0 1 2 / 7 · 3 / 6 5 4
+private static readonly (int Dx, int Dy)[] Steps =
+    { (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0) };  // "oben" = Dy -1
+
+private static readonly Brush[] Palette =                // Farbe aus Index
+{
+    Brushes.Black, Brushes.Red, Brushes.Orange, Brushes.Green,
+    Brushes.Blue, Brushes.Purple, Brushes.Brown, Brushes.DeepPink,
+};
+
+var segments = new List<Segment>();
+var pos = new Point(0, 0);
+foreach (var d in details.OrderBy(d => d.SeqNo))
+{
+    var (dx, dy) = Steps[d.Code];
+    var next = new Point(pos.X + dx * d.Count, pos.Y + dy * d.Count);
+    Brush? brush = d.Option is int c ? Palette[c % Palette.Length] : null;   // null = unsichtbar
+    segments.Add(new Segment(pos, next, brush));
+    pos = next;                                          // auch ohne Zeichnen weiterbewegen
+}
+Segments = segments;
+
+// Winkel statt Index (Grad → Bogenmaß, minus weil Y nach unten wächst)
+double rad = deg * Math.PI / 180;
+var end = new Point(x + len * Math.Cos(rad), y - len * Math.Sin(rad));
+----
 
 === Variante: Liniendiagramm (x und y getrennt skaliert)
 
 [source,csharp]
 ----
-// Values: IList<double?> (DependencyProperty wie oben), null = Lücke
+// Values: IList<double?> als DependencyProperty wie oben, null = Lücke
 var present = Values.Where(v => v != null).Select(v => v!.Value).ToList();
 if (present.Count == 0 || ActualWidth <= 20 || ActualHeight <= 20) return;
 const double m = 10;
@@ -1273,12 +1408,13 @@ double min = present.Min(), max = present.Max();
 double rangeY = Math.Max(max - min, 1e-9), rangeX = Math.Max(Values.Count - 1, 1);
 double w = ActualWidth - 2 * m, h = ActualHeight - 2 * m;
 double ToX(int i)    => m + i / rangeX * w;
-double ToY(double v) => m + (max - v) / rangeY * h;                    // (max - v): großer Wert oben
+double ToY(double v) => m + (max - v) / rangeY * h;      // (max - v): großer Wert oben
 
+var pen = new Pen(Brushes.Blue, 1);
 for (int i = 1; i < Values.Count; i++)
-    if (Values[i - 1] is { } a && Values[i] is { } b)                  // nur wenn BEIDE Werte da sind
-        dc.DrawLine(new Pen(Brushes.Blue, 1), new Point(ToX(i - 1), ToY(a)), new Point(ToX(i), ToY(b)));
-if (min < 0 && max > 0)                                                // Null-Linie
+    if (Values[i - 1] is { } a && Values[i] is { } b)    // nur wenn BEIDE Werte da sind
+        dc.DrawLine(pen, new Point(ToX(i - 1), ToY(a)), new Point(ToX(i), ToY(b)));
+if (min < 0 && max > 0)                                  // Null-Linie
     dc.DrawLine(new Pen(Brushes.Gray, 1), new Point(m, ToY(0)), new Point(m + w, ToY(0)));
 ----
 
@@ -1286,21 +1422,21 @@ if (min < 0 && max > 0)                                                // Null-L
 
 [source,xml]
 ----
-<ItemsControl ItemsSource="{Binding Lines}">                 <!-- ObservableCollection<LineData> im VM -->
+<ItemsControl ItemsSource="{Binding Lines}">        <!-- ObservableCollection<LineData> -->
     <ItemsControl.ItemsPanel>
         <ItemsPanelTemplate><Canvas Background="White" ClipToBounds="True"/></ItemsPanelTemplate>
     </ItemsControl.ItemsPanel>
     <ItemsControl.ItemTemplate>
         <DataTemplate>
             <Line X1="{Binding X1}" Y1="{Binding Y1}" X2="{Binding X2}" Y2="{Binding Y2}"
-                  Stroke="{Binding Color}" StrokeThickness="2"/>          <!-- Color als string "Red" geht -->
+                  Stroke="{Binding Color}" StrokeThickness="2"/>   <!-- Color "Red" geht -->
         </DataTemplate>
     </ItemsControl.ItemTemplate>
 </ItemsControl>
 ----
 
-* Für `Rectangle`/`Ellipse` die Position am Container setzen:
-  `<ItemsControl.ItemContainerStyle><Style TargetType="ContentPresenter"><Setter Property="Canvas.Left" Value="{Binding X}"/>...`.
+* `Rectangle`/`Ellipse` positionieren: `ItemContainerStyle` mit `<Style TargetType="ContentPresenter">` und
+  `<Setter Property="Canvas.Left" Value="{Binding X}"/>`.
 * Automatisch skalieren: `<Viewbox Stretch="Uniform">` um ein Canvas mit fester Größe (Linien werden mitskaliert).
 
 [[tests]]
@@ -1313,39 +1449,46 @@ using FluentAssertions;
 public class MainViewModelTests
 {
     [Fact]
-    public void SaveCommand_WithoutTitle_IsDisabled()              // Was_Bedingung_Erwartung
+    public void SaveCommand_WithoutTitle_IsDisabled()        // Was_Bedingung_Erwartung
     {
-        var vm = new MainViewModel();                              // Arrange
+        var vm = new MainViewModel();                        // Arrange
         vm.Document.Title   = "";
-        vm.Document.NewTime = "34'";
-        vm.Document.NewText = "Tor";
+        vm.Document.NewTime = "12:34";
+        vm.Document.NewText = "Text";
 
-        var canExecute = vm.SaveCommand.CanExecute(null);          // Act  (= ist der Button aktiv?)
+        var canExecute = vm.SaveCommand.CanExecute(null);    // Act (= ist der Button aktiv?)
 
-        canExecute.Should().BeFalse();                             // Assert
+        canExecute.Should().BeFalse();                       // Assert
     }
 
     [Theory]
-    [InlineData("45'+2", true)]
+    [InlineData("12:34", true)]
     [InlineData("abc",   false)]
     [InlineData(null,    false)]
-    public void IsValidTime_Works(string? input, bool expected) => input.IsValidTime().Should().Be(expected);
+    public void IsValidTime_Works(string? input, bool expected)
+        => input.IsValidTime().Should().Be(expected);
 
     [Fact]
     public void Load_Twice_DoesNotDuplicate()
     {
         string file = Path.GetTempFileName();
-        new DataManager().Save(TestData(), file);                  // TestData(): eigene Hilfsmethode → DTO
+        var data = CreateTestData();                         // eigene Hilfsmethode → DTO
+        new DataManager().Save(data, file);                  // Testdaten über die Logic-Klasse
         var vm = new MainViewModel { FileName = file };
 
-        vm.Load(); vm.Load();                                      // bzw. vm.LoadCommand.Execute(null)
+        vm.Load(); vm.Load();                                // bzw. vm.LoadCommand.Execute(null)
 
-        vm.Document.Entries.Should().HaveCount(TestData().Entries.Length);
+        vm.Document.Entries.Should().HaveCount(data.Entries.Length);
         File.Delete(file);
     }
 
     [Fact]
-    public async Task SearchAsync_FindsText() { var vm = new MainViewModel(); /* ... */ await vm.SearchAsync(); }
+    public async Task SearchAsync_Works()                    // async: Task-Methode awaiten
+    {
+        var vm = new MainViewModel();
+        await vm.SearchAsync();
+        vm.IsBusy.Should().BeFalse();
+    }
 }
 ----
 
