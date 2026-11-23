@@ -1270,21 +1270,21 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
             <Button Content="Filter" Command="{Binding FilterCommand}"/>
         </StackPanel>
 
-        <ListView Grid.Row="1" Margin="5" ItemsSource="{Binding Items}"
-                  SelectedItem="{Binding SelectedItem}" IsEnabled="{Binding IsNotEditing}">
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn Header="Date"
-                        DisplayMemberBinding="{Binding CreationDate, StringFormat=d}"/>
-                    <GridViewColumn Header="Name"     DisplayMemberBinding="{Binding Name}"/>
-                    <GridViewColumn Header="Category" DisplayMemberBinding="{Binding Category}"/>
-                    <GridViewColumn Header="Count"    DisplayMemberBinding="{Binding DetailCount}"/>
-                    <GridViewColumn Header="Tags"     DisplayMemberBinding="{Binding Tags}"/>
-                    <GridViewColumn Header="Min"
-                        DisplayMemberBinding="{Binding MinValue, TargetNullValue='-'}"/>
-                </GridView>
-            </ListView.View>
-        </ListView>
+        <DataGrid Grid.Row="1" Margin="5" ItemsSource="{Binding Items}"
+                  SelectedItem="{Binding SelectedItem}" IsEnabled="{Binding IsNotEditing}"
+                  AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                  HeadersVisibility="Column" SelectionMode="Single">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Date"
+                                    Binding="{Binding CreationDate, StringFormat=d}"/>
+                <DataGridTextColumn Header="Name"     Binding="{Binding Name}" Width="*"/>
+                <DataGridTextColumn Header="Category" Binding="{Binding Category}"/>
+                <DataGridTextColumn Header="Count"    Binding="{Binding DetailCount}"/>
+                <DataGridTextColumn Header="Tags"     Binding="{Binding Tags}"/>
+                <DataGridTextColumn Header="Min"
+                                    Binding="{Binding MinValue, TargetNullValue='-'}"/>
+            </DataGrid.Columns>
+        </DataGrid>
 
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
@@ -1306,7 +1306,10 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 </Window>
 ----
 
+* Alle Elemente stehen *im* `<Grid>`: ein `Window` hat genau ein Kind („Content is set more than once“ = zweites Kind).
 * Layout nachbauen: Zeilen zählen, nur die Zeile mit der Liste `+*+`, alle anderen `Auto`.
+* `DataGrid`: `AutoGenerateColumns="False"` (sonst doppelte Spalten), `IsReadOnly="True"` (Binding ist TwoWay,
+  Properties ohne Setter werfen sonst), `CanUserAddRows="False"` (keine leere Zeile am Ende).
 * `<RowDefinition/>` = `+*+`. `2*` = doppelter Anteil, Zahl = Pixel. `Grid.Row`/`Column` 0-basiert, `RowSpan`/`ColumnSpan` verbinden.
 * `TextBox` sperren: `IsReadOnly="{Binding IsNotEditing}"`. `ComboBox` hat kein `IsReadOnly` → `IsEnabled`.
 * `<` in Attributen als `&lt;` schreiben (`"&lt;All&gt;"`).
@@ -1349,25 +1352,50 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
   (Standard `LostFocus` → Button bleibt beim Tippen grau).
 * Fenster an Inhalt anpassen: `SizeToContent="WidthAndHeight"`, `ResizeMode="NoResize"`. `IsDefault="True"` = Enter.
 
-=== DataGrid statt ListView
+=== DataGrid: weitere Spalten, Zeilen einfärben, Alternative ListView
 
 [source,xml]
 ----
-<DataGrid Grid.Row="1" ItemsSource="{Binding Document.Entries}"
-          SelectedItem="{Binding SelectedEntry}"
-          AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
-          HeadersVisibility="Column" SelectionMode="Single" VerticalScrollBarVisibility="Visible">
+<DataGrid ... AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
     <DataGrid.Columns>
-        <DataGridTextColumn Header="Time"   Width="60"   Binding="{Binding Time}"/>
-        <DataGridTextColumn Header="Text"   Width="*"    Binding="{Binding Text}"/>
-        <DataGridTextColumn Header="Price"  Binding="{Binding Price, StringFormat=N2}"/>
+        <DataGridTextColumn Header="Time"  Width="60" Binding="{Binding Time}"/>  <!-- Pixel -->
+        <DataGridTextColumn Header="Text"  Width="*"  Binding="{Binding Text}"/>  <!-- Rest -->
+        <DataGridTextColumn Header="Price" Binding="{Binding Price, StringFormat=N2}">
+            <DataGridTextColumn.ElementStyle>                      <!-- rechtsbündig -->
+                <Style TargetType="TextBlock">
+                    <Setter Property="HorizontalAlignment" Value="Right"/>
+                </Style>
+            </DataGridTextColumn.ElementStyle>
+        </DataGridTextColumn>
         <DataGridCheckBoxColumn Header="Active" Binding="{Binding IsActive}"/>
+        <DataGridTemplateColumn Header="">                         <!-- Button pro Zeile -->
+            <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                    <Button Content="X" CommandParameter="{Binding}"
+                            Command="{Binding DataContext.DeleteCommand,
+                                      RelativeSource={RelativeSource AncestorType=Window}}"/>
+                </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+        </DataGridTemplateColumn>
     </DataGrid.Columns>
+
+    <DataGrid.RowStyle>                                            <!-- ganze Zeile einfärben -->
+        <Style TargetType="DataGridRow">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding CategoryId}" Value="{x:Null}">
+                    <Setter Property="Foreground" Value="Gray"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </DataGrid.RowStyle>
 </DataGrid>
 ----
 
-* `AutoGenerateColumns="False"` (sonst doppelte Spalten). `IsReadOnly` nötig bei Properties ohne Setter (Binding ist TwoWay).
+* Datei-Vorlage: `ItemsSource="{Binding Document.Entries}"`, Spalten an die Properties von `EntryRow` binden.
 * Scrollt nur in einer `+*+`-Zeile oder als letztes Kind eines `DockPanel`, *nie* in einem `StackPanel`.
+* Jede zweite Zeile färben: `AlternatingRowBackground="#FFF0F0F0"`. Gitterlinien aus: `GridLinesVisibility="None"`.
+* Alternative ohne Gitter: `<ListView ItemsSource=... SelectedItem=...><ListView.View><GridView>`
+  mit `<GridViewColumn Header="Name" DisplayMemberBinding="{Binding Name}"/>`.
 
 === Binding-Spickzettel
 
@@ -1416,19 +1444,9 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
         </Style>
     </TextBlock.Style>
 </TextBlock>
-
-<!-- ganze Listenzeile einfärben -->
-<ListView.ItemContainerStyle>
-    <Style TargetType="ListViewItem">
-        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-        <Style.Triggers>
-            <DataTrigger Binding="{Binding CategoryId}" Value="{x:Null}">
-                <Setter Property="Foreground" Value="Gray"/>
-            </DataTrigger>
-        </Style.Triggers>
-    </Style>
-</ListView.ItemContainerStyle>
 ----
+
+* Ganze Zeile einer Tabelle einfärben: `DataGrid.RowStyle` (siehe DataGrid-Abschnitt).
 
 * `DataTrigger` vergleicht nur auf Gleichheit → für `>`/`<` eine `bool`-Property im ViewModel. Letzter passender Trigger gewinnt.
 * `Trigger Property="IsMouseOver"` wirkt beim Button-Hintergrund nicht (Standard-Template). Farbe aus dem ViewModel geht direkt:
