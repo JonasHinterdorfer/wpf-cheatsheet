@@ -785,7 +785,7 @@ public async Task SearchAsync()                                     // Task → 
 * `await Task.Delay(…)` statt `Thread.Sleep`. Nie `.Result`/`.Wait()` (Deadlock). Keine Collection in `Task.Run` ändern.
 * CPU-Arbeit: `var r = await Task.Run(() => Heavy(x));` und das Ergebnis erst *nach* dem `await` zuweisen.
 * Live-Ergebnisse: `var progress = new Progress<string>(line => Lines.Add(line));` an `Task.Run` übergeben, `progress.Report(...)`.
-* Takt im UI-Thread: `var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) }; t.Tick += (_, _) => Seconds++; t.Start();`
+* Takt im UI-Thread: `var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) }; t.Tick += (_, _) => Seconds += 1; t.Start();`
 
 === Viele gleiche Buttons, ein Command (Spielfeld, Rechner)
 
