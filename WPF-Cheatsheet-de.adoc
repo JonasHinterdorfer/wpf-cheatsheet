@@ -210,7 +210,13 @@ public static class TimeExtensions                      // static class + static
 
     public static bool IsValidTime(this string? s) => s.TryParseTime(out _, out _);
 
-    public static string ToTimeText(this int seconds)  // 3725 → "1:02:05", 2525 → "42:05"
+    public static (int minute, int extra) ToTime(this string s)        // werfende Variante
+        => s.TryParseTime(out var m, out var e) ? (m, e) : throw new FormatException($"Ungültig: '{s}'");
+
+    public static string ToTimeText(this (int minute, int extra) t)    // Extension auf Tupel
+        => t.extra > 0 ? $"{t.minute}'+{t.extra}" : $"{t.minute}'";    // (90, 3) → "90'+3"
+
+    public static string ToClock(this int seconds)                     // 3725 → "1:02:05", 2525 → "42:05"
     {
         if (seconds < 0) throw new ArgumentOutOfRangeException(nameof(seconds));
         int h = seconds / 3600, m = seconds % 3600 / 60, s = seconds % 60;
@@ -234,6 +240,7 @@ var (half, minute) = 50.Split();                         // Tupel zerlegen
 [source,csharp]
 ----
 // "0$2B1$2c"  →  Farbe 0, 2× Richtung 1 zeichnen, Farbe 1, 2× Richtung 2 ohne Zeichnen
+// Core/Parser.cs: public static class Parser { ... }
 public static List<Detail> Parse(string text)
 {
     var result = new List<Detail>();
@@ -639,8 +646,8 @@ public class MainViewModel : NotifyPropertyChanged
         var dto = _manager.Load(FileName!);
         Document.Title = dto.Title;
         Document.Entries.Clear();
-        foreach (var e in dto.Entries.OrderBy(e => e.Seconds))
-            Document.Entries.Add(new EntryRow { Time = e.Seconds.ToTimeText(), Text = e.Text });   // DTO → Anzeige
+        foreach (var e in dto.Entries.OrderBy(e => e.Minute).ThenBy(e => e.Extra))
+            Document.Entries.Add(new EntryRow { Time = (e.Minute, e.Extra).ToTimeText(), Text = e.Text });   // DTO → Anzeige
     }
 
     public bool CanSave() => !string.IsNullOrWhiteSpace(Document.Title)
@@ -651,7 +658,11 @@ public class MainViewModel : NotifyPropertyChanged
         _manager.Save(new Logic.DTO.DataSet
         {
             Title   = Document.Title!,
-            Entries = Document.Entries.Select(r => new Entry { Seconds = r.Time.ToSeconds(), Text = r.Text }).ToArray(),
+            Entries = Document.Entries.Select(r =>
+            {
+                var (minute, extra) = r.Time.ToTime();                                   // Anzeige → DTO
+                return new Entry { Minute = minute, Extra = extra, Text = r.Text };
+            }).ToArray(),
         }, FileName!);
         Document.NewTime = null;                               // Eingabefelder leeren (Test prüft das oft)
         Document.NewText = null;
@@ -789,7 +800,11 @@ private bool HasWon(string p) => Lines.Any(l => l.All(i => Cells[i] == p));
 
 // Rechner: Operation als Lambda merken, bei "=" ausführen
 private Func<double, double, double>? _op;
-DigitCommand    = new RelayCommand(p => Display = _newNumber || Display == "0" ? (string)p! : Display + p);
+DigitCommand    = new RelayCommand(p =>
+{
+    Display    = _newNumber || Display == "0" ? (string)p! : Display + p;
+    _newNumber = false;
+});
 OperatorCommand = new RelayCommand(p =>
 {
     _left = double.Parse(Display);
@@ -797,9 +812,12 @@ OperatorCommand = new RelayCommand(p =>
                               "*" => (a, b) => a * b, "/" => (a, b) => a / b, _ => null };
     _newNumber = true;
 });
-EqualsCommand = new RelayCommand(() => { var r = _op!(_left, double.Parse(Display));
-                                         Display = double.IsFinite(r) ? r.ToString() : "Error"; _op = null; },
-                                 () => _op != null);
+EqualsCommand = new RelayCommand(() =>
+{
+    var r = _op!(_left, double.Parse(Display));
+    Display = double.IsFinite(r) ? r.ToString() : "Error";
+    _op = null; _newNumber = true;                       // nächste Ziffer beginnt neue Zahl
+}, () => _op != null);
 
 // HP-/UPN-Rechner: Stack
 var stack = new Stack<double>(); stack.Push(3); double top = stack.Pop(); double peek = stack.Peek();
@@ -823,6 +841,27 @@ var stack = new Stack<double>(); stack.Push(3); double top = stack.Pop(); double
 * `/ 0` bei `double` → `Infinity` (keine Exception) → `double.IsFinite` prüfen.
 * Tasten: `<Window.InputBindings><KeyBinding Key="D7" Command="{Binding DigitCommand}" CommandParameter="7"/></Window.InputBindings>`
   (`D0`–`D9`, `NumPad0`–`NumPad9`, `Enter`, `Modifiers="Control"`).
+
+*Ohne MVVM (Lehrziel „Event-Handling“):* ein Handler für viele Buttons im Code-Behind.
+
+[source,xml]
+----
+<TextBlock x:Name="Display" Text="0"/>
+<Button Content="7" Click="Digit_Click"/>
+<Button Content="+" Click="Operator_Click"/>
+----
+
+[source,csharp]
+----
+private void Digit_Click(object sender, RoutedEventArgs e)
+{
+    string digit = (string)((Button)sender).Content;          // welcher Button? (oder Tag="...")
+    Display.Text = _newNumber || Display.Text == "0" ? digit : Display.Text + digit;
+    _newNumber   = false;
+}
+// Operator_Click / Equals_Click genauso wie die Commands oben, nur mit Display.Text
+MessageBox.Show("Division durch 0", "Fehler", MessageBoxButton.OK, MessageBoxImage.Error);
+----
 
 [[fenster]]
 == Fenster, DI und Dialoge (Vorlage B)
