@@ -1,15 +1,16 @@
 # WPF Cheat Sheet
 
-Kompaktes WPF/MVVM-Cheatsheet für die Prüfung, ausgerichtet an der Musterlösung der Turtle-Aufgabe (aber neutral formuliert). Die Kapitel folgen dem Arbeitsablauf:
+Kompaktes WPF/MVVM-Cheatsheet für die Prüfung. Beispielprojekt ist die Turtle-Aufgabe, die Snippets verwenden
+neutrale Platzhalter (Tabelle am Anfang). Kapitel in Arbeitsreihenfolge:
 
-1. Ablauf-Checkliste + Platzhalter-Namen (`Item`/`Category`/`Detail`/`Tag`) zum Suchen/Ersetzen
-2. Projekt und Vorlage (Datei-Vorlage, DB-Vorlage, ohne Vorlage)
-3. Logik und Helper (Parser, Regex, Try-Muster, Dateien, CSV)
-4. Datenbank und Import (Entities, Mapping-Klassen, Migrationen, Repository-Abfrage, Parser → ImportService → Program.cs)
-5. Model und ViewModel (Haupt-ViewModel, Dialog-ViewModels mit Validierung, Design-Daten, Datei-Vorlage, Async)
-6. Fenster, DI und Dialoge (App-Start, WindowNavigator)
-7. XAML (Bausteine: Grid, StackPanel, ListView/DataGrid, UniformGrid, Dialoge, Binding, Styles)
-8. Custom Draw (Control mit Skalierung zum Kopieren + anpassbarer Teil Daten → Linien)
+1. Ablauf, Platzhalter, Projektstruktur (Turtle)
+2. Logik und Helper (Regex, Try-Muster, Token-Parser, CSV)
+3. Datenbank und Import (Entities, Mapping, Migration, Repository-Abfrage, Parser → ImportService → Program.cs)
+4. Model und ViewModel (Haupt-ViewModel, Dialog-ViewModels, Datei-Vorlage, Async, Button-Raster)
+5. Fenster, DI und Dialoge (App-Start, WindowNavigator)
+6. XAML (Bausteine, ListView/DataGrid, ItemsControl mit DataTemplate, Binding, Styles)
+7. Custom Draw (Control mit Skalierung + Daten → Linien)
+8. Web API (Controller: DTOs, GET/POST, Statuscodes)
 9. Unit-Tests und häufige Fehler
 
 - [`WPF-Cheatsheet-de.adoc`](WPF-Cheatsheet-de.adoc) – AsciiDoc-Quelle
