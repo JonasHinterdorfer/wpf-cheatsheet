@@ -23,8 +23,7 @@ Alle Snippets verwenden neutrale Platzhalter-Namen (Tabelle unten) und sind zum 
 | *1. Logik*
 | Helper/Parser ohne UI (Extension, Regex, Try-Muster). Helper-Tests laufen lassen, bis grün. → <<logik>>
 | *2. DB + Import*
-| Entities + DbContext-Mapping, Migration (`Add-Migration`, `Update-Database`), Repository-Abfrage (Filter + `Select` in DTO), `ImportService` (Transaktion, Navigation-Properties, ein `AddAsync`),
-  Konsolen-Import. → <<db>>
+| Entities + Mapping-Klassen, DbContext. Repository-Abfrage (Filter + `Select` in DTO-Record). Parser (Core) → `ImportService` (ein Datensatz, eine Transaktion, ein `AddAsync`) → `Program.cs` (Ordner-Schleife). → <<db>>
 | *3. ViewModel*
 | Pro Feld eine Property mit `SetProperty`, Listen als `ObservableCollection`. Pro Button `CanXxx()` + `Xxx()` + `XxxCommand`.
   Laden in `InitializeDataAsync` bzw. `Load()`. → <<vm>>
@@ -51,11 +50,13 @@ Per Suchen/Ersetzen (ganzes Wort, Groß-/Kleinschreibung beachten) an die Angabe
 |===
 | Platzhalter | Bedeutung
 | `Item` | Haupt-Entity: wird importiert, in der Übersicht gelistet, im Detail-Dialog angezeigt
-| `Category` | Nachschlage-Entity mit nullable Fremdschlüssel `Item.CategoryId` (Filter-ComboBox, bearbeitbar)
-| `Detail` | 1:n-Kind von `Item` mit laufender Nummer `SeqNo` (z. B. Zeilen/Werte/Schritte aus der Datei)
-| `Tag` | m:n-Beziehung zu `Item`, in der Liste als Text „A,B“ angezeigt
-| `Entry` / `EntryRow` | Datensatz einer Datei (DTO) / Zeile in der Tabelle (UI)
-| `Document` | UI-Model mit Kopfdaten + Liste von `EntryRow` (Datei-Vorlage)
+| `Category` | Nachschlage-Entity (`Code`, `Name`) mit nullable Fremdschlüssel `Item.CategoryId`
+| `Detail` | 1:n-Kind von `Item` mit laufender Nummer `SeqNo` (eine Zeile/ein Schritt aus der Datei)
+| `Tag` / `Rating` | m:n-Beziehung zu `Item` (Text „A,B“) / m:n mit Zusatzdaten (eigene Entity)
+| `Step`, `ItemParser` | Domain-Record + Parser in `Core.Domain` (Vorlage: eigener Ordner, z. B. `Core.<Thema>`)
+| `ItemOverviewDto`, `CategoryItem` | Zeile der Übersicht (Record) / Eintrag einer ComboBox inkl. `<All>`
+| `DetailWindow`, `ImportWindow`, `PreviewControl` | Detail-Dialog, Import-Dialog, Custom-Draw-Control (+ `...ViewModel`)
+| `Entry` / `EntryRow` / `Document` | Datei-Vorlage: Datensatz (DTO) / Tabellenzeile / UI-Model mit Kopfdaten
 |===
 
 [[vorlage]]
@@ -197,6 +198,8 @@ FileName = $"{AppDomain.CurrentDomain.BaseDirectory}\\data.txt";  // falls so vo
 [[logik]]
 == Logik und Helper (ohne UI)
 
+Der Datei-Parser für den Import (Zahl als Prefix + Befehlszeichen) steht bei <<import>>.
+
 === Extension-Methode, Try-Muster, Regex
 
 [source,csharp]
@@ -247,41 +250,6 @@ var (part, rest) = 125.DivRem(60);                 // Tupel zerlegen: 2, 5
 * Extension auf Tupel: `public static string ToText(this (int a, int b) t)` → Aufruf `(1, 5).ToText()`.
 * Zahl sicher parsen: `double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)`
   (Punkt als Dezimaltrenner, `1,5` wird abgelehnt).
-
-=== Text zeichenweise parsen (Zahl als Prefix + Befehlszeichen)
-
-[source,csharp]
-----
-// Beispiel "3A2b5$C": Zahl vor einem Zeichen = Wiederholung bzw. Wert, Zeichen = Befehl
-public static List<Detail> Parse(string text)       // Core/Parser.cs: public static class Parser
-{
-    var result = new List<Detail>();
-    int prefix = 0, option = 0;
-    foreach (char c in text)
-    {
-        if (char.IsAsciiDigit(c))                    // mehrstellige Zahl aufbauen
-        {
-            prefix = prefix * 10 + (c - '0');
-            continue;
-        }
-
-        int count = prefix == 0 ? 1 : prefix;        // fehlt die Zahl → 1
-        if (c == '$')
-            option = prefix;                         // Sonderzeichen: Zahl als Wert merken
-        else if (c is >= 'A' and <= 'Z')
-            result.Add(new Detail { Code = c - 'A', Count = count, Option = option });
-        else if (c is >= 'a' and <= 'z')
-            result.Add(new Detail { Code = c - 'a', Count = count, Option = null });
-        else
-            continue;                                // unbekannt (Leerzeichen, \n): ignorieren
-        prefix = 0;                                  // nach jedem Befehl zurücksetzen
-    }
-    return result;
-}
-----
-
-* `c - 'A'` macht aus einem Buchstaben eine Zahl (`'A'` → 0, `'B'` → 1), `c - '0'` aus einer Ziffer.
-* `c is >= 'A' and <= 'H'` prüft einen Bereich. Groß-/Kleinbuchstabe als Variante (z. B. mit/ohne Option).
 
 === Text in Werte zerlegen (Kommentar, Trennzeichen, n*wert)
 
@@ -371,110 +339,143 @@ string tags = string.Join(",", item.Tags.Select(t => t.Name));   // Liste als Te
 [[db]]
 == Datenbank und Import
 
-=== Entities anlegen (Core/Entities)
+Aufteilung wie in der Musterlösung: *Entities* (Core) → *Mapping + DbContext* (Persistence) → *Repository-Abfragen*
+(Persistence) → *Parser* (Core, reine Logik) → *ImportService* (Persistence, EIN Datensatz) → *Program.cs* (Ordner-Schleife).
+
+=== Entities (Core/Entities)
 
 [source,csharp]
 ----
 public class Item : EntityObject                       // Vorlage: EntityObject = Id + RowVersion
 {
-    [MaxLength(100)] public string  Name        { get; set; } = "";   // string  = NOT NULL
-    [MaxLength(256)] public string? Description { get; set; }         // string? = NULL erlaubt
-    public DateOnly CreationDate { get; set; }
-    public decimal  Price        { get; set; }
+    public required string Name         { get; set; }  // required: muss bei new gesetzt werden
+    public string?         Description  { get; set; }  // ? = darf NULL sein
+    public DateOnly        CreationDate { get; set; }
 
-    public int?      CategoryId { get; set; }            // int? = optionaler Fremdschlüssel
-    public Category? Category   { get; set; }            // Navigation (n-Seite von 1:n)
+    public int?      CategoryId { get; set; }          // optionaler Fremdschlüssel (nullable!)
+    public Category? Category   { get; set; }          // Navigation-Property dazu
 
-    public List<Detail> Details { get; set; } = new();   // 1:n (Kinder)
-    public List<Tag>    Tags    { get; set; } = new();   // m:n (Gegenseite: List<Item>)
+    public IList<Detail>? Details { get; set; }        // 1:n
+    public IList<Tag>?    Tags    { get; set; }        // m:n (Gegenseite: IList<Item>? Items)
 }
 
-public class Category : EntityObject
+public class Category : EntityObject                   // Nachschlage-Tabelle
 {
-    [MaxLength(50)] public string Name  { get; set; } = "";
-    public List<Item>             Items { get; set; } = new();
+    public required string Code  { get; set; }
+    public required string Name  { get; set; }
+    public IList<Item>?    Items { get; set; }
 }
 
-public class Detail : EntityObject                     // 1:n-Kind
+public class Detail : EntityObject                     // 1:n-Kind, Reihenfolge über SeqNo
 {
-    public int   ItemId { get; set; }                  // int = Pflicht → Cascade Delete
+    public int  SeqNo  { get; set; }
+    public int  Kind   { get; set; }
+    public int  Repeat { get; set; }
+    public int? Color  { get; set; }
+
+    public int   ItemId { get; set; }                  // Pflicht-Fremdschlüssel
     public Item? Item   { get; set; }
-    public int     SeqNo  { get; set; }
-    public int     Code   { get; set; }
-    public int     Count  { get; set; }
-    public int?    Option { get; set; }
-    public double? Value  { get; set; }
 }
 
 public class Tag : EntityObject                        // m:n ohne Zusatzdaten
 {
-    [MaxLength(50)] public string Name  { get; set; } = "";
-    public List<Item>             Items { get; set; } = new();
+    public required string Description { get; set; }
+    public bool            Active      { get; set; }
+    public IList<Item>?    Items       { get; set; }
 }
 
 public class Rating : EntityObject                     // m:n MIT Zusatzdaten = eigene Entity
 {
-    public int  ItemId { get; set; }
-    public Item? Item  { get; set; }
-    public int  TagId  { get; set; }
-    public Tag?  Tag   { get; set; }
-    [Range(1, 5)] public int Stars { get; set; }
     public DateTime Created { get; set; }
+
+    [Range(1, 5)]                                      // prüft die Vorlage beim SaveChangesAsync
+    public int Value { get; set; }
+
+    public int   TagId  { get; set; }
+    public Tag?  Tag    { get; set; }
+    public int   ItemId { get; set; }
+    public Item? Item   { get; set; }
 }
 ----
 
-* Konventionen: Property `Id` = Primärschlüssel (Identity). `XxxId` + Navigation `Xxx` = Fremdschlüssel.
-  `int?` = optional (beim Löschen `SetNull`), `int` = Pflicht (Cascade). Zwei `List<>`-Seiten = m:n mit Join-Tabelle.
-* Ohne Vorlage selbst: `public int Id { get; set; }` und für Concurrency `[Timestamp] public byte[]? RowVersion { get; set; }`.
-* Attribute: `[Required]`, `[MaxLength(n)]`, `[Range]`, `[NotMapped]` (keine Spalte), `[ForeignKey(nameof(X))]`,
-  `[Column(TypeName = "decimal(10,2)")]`, an der Klasse `[Index(nameof(Name), IsUnique = true)]`. `enum` wird als `int` gespeichert.
+* Konventionen: `Id` = Primärschlüssel, `XxxId` + `Xxx` = Fremdschlüssel. `int?` = optional, `int` = Pflicht (Cascade Delete).
+* `required` → jedes `new Category { ... }` muss `Code` *und* `Name` setzen, sonst Compilerfehler CS9035.
+* Validierungs-Attribute (`[Range]`, `[MaxLength]`, `[Required]`) prüft die Vorlage in `SaveChangesAsync` → `ValidationException`.
+* Ohne Vorlage: `public int Id { get; set; }` + `[Timestamp] public byte[]? RowVersion { get; set; }` selbst schreiben.
 
-=== DbContext und Mapping (Persistence)
+=== Mapping pro Entity + DbContext (Persistence)
 
 [source,csharp]
 ----
+// Persistence/Mapping/ItemMapping.cs  (eine Datei pro Entity)
+public static class ItemMapping
+{
+    public static void Map(this EntityTypeBuilder<Item> entity)
+    {
+        entity.ToTable("Item");                            // Tabellenname
+        entity.HasKey(i => i.Id);
+
+        entity.HasIndex(i => i.Name).IsUnique();           // eindeutig
+        entity.Property(i => i.Name).AsRequiredText(256);  // Vorlage: NOT NULL + Länge
+        entity.Property(i => i.Description).HasMaxLength(2000);
+
+        entity.HasMany(i => i.Details);                    // 1:n
+        entity.HasOne(i => i.Category);                    // n:1, FK CategoryId per Konvention
+        entity.HasMany(i => i.Tags).WithMany(t => t.Items);   // m:n → Join-Tabelle automatisch
+    }
+}
+
+public static class CategoryMapping
+{
+    public static void Map(this EntityTypeBuilder<Category> entity)
+    {
+        entity.ToTable("Category");
+        entity.HasKey(c => c.Id);
+        entity.HasIndex(c => c.Code).IsUnique();
+        entity.Property(c => c.Code).HasMaxLength(16);
+        entity.HasIndex(c => c.Name).IsUnique();
+        entity.Property(c => c.Name).HasMaxLength(256);
+    }
+}
+
+public static class DetailMapping
+{
+    public static void Map(this EntityTypeBuilder<Detail> entity)
+    {
+        entity.ToTable("Detail");
+        entity.HasKey(d => d.Id);
+        entity.HasIndex(d => new { d.ItemId, d.SeqNo }).IsUnique();   // zusammengesetzt
+    }
+}
+// RatingMapping: ToTable + HasKey + entity.HasOne(r => r.Item); entity.HasOne(r => r.Tag);
+----
+
+[source,csharp]
+----
+// Persistence/ApplicationDbContext.cs
 public class ApplicationDbContext : DbContext
 {
-    public DbSet<Item>     Items      => Set<Item>();   // ein DbSet pro Tabelle
-    public DbSet<Category> Categories => Set<Category>();
-    public DbSet<Detail>   Details    => Set<Detail>();
-    public DbSet<Tag>      Tags       => Set<Tag>();
-    public DbSet<Rating>   Ratings    => Set<Rating>();
-
-    public ApplicationDbContext() { }                   // für Migrationen / ohne DI
-    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
-        : base(options) { }
+    public ApplicationDbContext() { }                  // für Migrationen, muss zuerst stehen
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options) { }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
-        if (optionsBuilder.IsConfigured) return;        // DI hat schon konfiguriert
-        var cs = ConfigurationHelper.GetConfiguration().GetConnectionString("DefaultConnection");
-        optionsBuilder.UseSqlServer(cs);
+        if (!optionsBuilder.IsConfigured)              // nur ohne DI (z. B. Add-Migration)
+        {
+            var cs = ConfigurationHelper.GetConfiguration()
+                                        .Get("DefaultConnection", "ConnectionStrings");
+            optionsBuilder.UseSqlServer(cs);
+        }
+        optionsBuilder.LogTo(message => Debug.WriteLine(message));   // SQL im Output-Fenster
     }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Item>(e =>
-        {
-            e.HasIndex(i => i.Name).IsUnique();         // eindeutig
-            e.Property(i => i.Name).HasMaxLength(100).IsRequired();
-            e.Property(i => i.Price).HasPrecision(10, 2);   // decimal immer festlegen
-            e.HasOne(i => i.Category)                   // 1:n explizit
-             .WithMany(c => c.Items)
-             .HasForeignKey(i => i.CategoryId)
-             .OnDelete(DeleteBehavior.SetNull);
-            e.HasMany(i => i.Tags).WithMany(t => t.Items);  // m:n, Join-Tabelle automatisch
-        });
-
-        modelBuilder.Entity<Detail>()
-            .HasIndex(d => new { d.ItemId, d.SeqNo }).IsUnique();   // zusammengesetzt eindeutig
-
-        modelBuilder.Entity<Rating>()
-            .HasOne(r => r.Item).WithMany().HasForeignKey(r => r.ItemId)
-            .OnDelete(DeleteBehavior.Restrict);         // mehrere Cascade-Pfade vermeiden
-
-        modelBuilder.Entity<Category>().HasData(        // Startdaten (Id fix angeben!)
-            new Category { Id = 1, Name = "Default" });
+        modelBuilder.Entity<Item>().Map();             // pro Entity eine Zeile
+        modelBuilder.Entity<Category>().Map();
+        modelBuilder.Entity<Detail>().Map();
+        modelBuilder.Entity<Tag>().Map();
+        modelBuilder.Entity<Rating>().Map();
     }
 }
 ----
@@ -488,13 +489,12 @@ public class ApplicationDbContext : DbContext
 }
 ----
 
-* `appsettings.json` liegt im Startprojekt, Eigenschaften: *In Ausgabeverzeichnis kopieren = Immer kopieren*.
-* Zertifikatsfehler beim Verbinden → `;TrustServerCertificate=True` an den Connection-String anhängen.
-* Konvention reicht meistens. `OnModelCreating` nur für: Unique-Index, `decimal`-Genauigkeit, Delete-Verhalten,
-  zusammengesetzte Schlüssel (`e.HasKey(x => new { x.AId, x.BId })`), Startdaten.
-* „multiple cascade paths“ beim `Update-Database` → bei einer Beziehung `OnDelete(DeleteBehavior.Restrict)` setzen.
-* NuGet: `Microsoft.EntityFrameworkCore.SqlServer` (Persistence), `Microsoft.EntityFrameworkCore.Tools`
-  (für `Add-Migration`), `Microsoft.EntityFrameworkCore.Design` (Startprojekt).
+* Mapping-Helfer der Vorlage (`Base.Persistence.Mappings`): `AsText(n)`, `AsRequiredText(n)`, `AsDecimal(10, 2)`, `AsDate()`, `AsTime()`.
+* Weitere: `.IsRequired()`, `.HasForeignKey(d => d.ItemId)`, `.OnDelete(DeleteBehavior.SetNull)`,
+  `.OnDelete(DeleteBehavior.Restrict)` (gegen „multiple cascade paths“), `.HasData(new Category { Id = 1, Code = "X", Name = "X" })`.
+* `appsettings.json` liegt im Startprojekt (Import *und* Wpf), *In Ausgabeverzeichnis kopieren = Immer kopieren*.
+  Ohne LocalDB, aber mit SQL Server: `Server=localhost;...;TrustServerCertificate=True`.
+* NuGet: `Microsoft.EntityFrameworkCore.SqlServer` + `.Tools` (Persistence), `Microsoft.EntityFrameworkCore.Design` (Startprojekt).
 
 === Migration erstellen (Visual Studio)
 
@@ -525,14 +525,7 @@ dotnet ef migrations add InitialCreate --project Persistence --startup-project I
 dotnet ef database update            --project Persistence --startup-project ImportConsoleApp
 ----
 
-[source,csharp]
-----
-// DB beim Import frisch aufbauen (Konsole, vor dem Import; Vorlage hat evtl. eigene UoW-Methoden)
-await using var context = new ApplicationDbContext();
-await context.Database.EnsureDeletedAsync();      // alte DB weg
-await context.Database.MigrateAsync();            // alle Migrationen anwenden
-----
-
+* Import neu aufbauen: siehe Program.cs unten (`CreateDatabaseAsync` *oder* `MigrateDatabaseAsync`).
 * „The term 'Add-Migration' is not recognized“ → Paket `Microsoft.EntityFrameworkCore.Tools` fehlt.
 * „Unable to create an object of type 'ApplicationDbContext'“ → parameterloser Konstruktor + `OnConfiguring` fehlt,
   falsches Startprojekt, oder `appsettings.json` wird nicht ins Ausgabeverzeichnis kopiert.
@@ -540,148 +533,311 @@ await context.Database.MigrateAsync();            // alle Migrationen anwenden
 * Migration falsch → `Remove-Migration`, Modell korrigieren, neu `Add-Migration`. Angewendete Migrationen nicht von Hand ändern.
 * Daten ansehen: *Ansicht → SQL Server-Objekt-Explorer* → `(localdb)\MSSQLLocalDB` → Datenbank → Tabelle → *Daten anzeigen*.
 
-=== Repository-Abfrage für die Übersicht (Filter in der DB)
+=== Repository-Abfrage für die Übersicht (DTO-Record, Filter in der DB)
 
 [source,csharp]
 ----
-// Core/Contracts/IItemRepository.cs  (Methode im Interface UND in der Klasse ergänzen)
-Task<List<ItemDto>> GetOverviewAsync(int? categoryId);
-
-// Core/DTOs/ItemDto.cs: genau die Spalten der Liste
-public class ItemDto
+// Core/DataTransferObjects/ItemOverviewDto.cs: genau die Spalten EINER Zeile der Liste
+public record ItemOverviewDto(
+    int           Id,
+    DateOnly      CreationDate,
+    string        Name,
+    string?       Description,
+    int?          CategoryId,
+    string?       CategoryName,
+    int           DetailCount,
+    IList<string> TagNames)
 {
-    public int      Id           { get; set; }
-    public string   Name         { get; set; } = "";
-    public DateOnly CreationDate { get; set; }
-    public int?     CategoryId   { get; set; }
-    public string?  Category     { get; set; }
-    public int      DetailCount  { get; set; }
-    public string   Tags         { get; set; } = "";
-    public double?  MinValue     { get; set; }             // Aggregat nullable (leer → NULL)
+    public string Tags => string.Join(",", TagNames);     // "A,B" für eine Spalte
+}
+
+// Core/Contracts/IItemRepository.cs
+public interface IItemRepository : IGenericRepository<Item>
+{
+    Task<IList<ItemOverviewDto>> GetOverviewAsync(int? categoryId);   // null = alle
 }
 
 // Persistence/ItemRepository.cs
-public async Task<List<ItemDto>> GetOverviewAsync(int? categoryId)
+public class ItemRepository : GenericRepository<Item>, IItemRepository
 {
-    IQueryable<Item> query = DbSet.AsNoTracking();          // bzw. _context.Items
-    if (categoryId != null)
-        query = query.Where(i => i.CategoryId == categoryId);   // Filter läuft als SQL
+    public ItemRepository(ApplicationDbContext dbContext) : base(dbContext) { }
 
-    return await query
-        .OrderBy(i => i.CreationDate)
-        .Select(i => new ItemDto
+    public async Task<IList<ItemOverviewDto>> GetOverviewAsync(int? categoryId)
+    {
+        IQueryable<Item> query = DbSet.AsNoTracking();
+        if (categoryId != null)
         {
-            Id           = i.Id,
-            Name         = i.Name,
-            CreationDate = i.CreationDate,
-            CategoryId   = i.CategoryId,
-            Category     = i.Category != null ? i.Category.Name : null,
-            DetailCount  = i.Details!.Count,                // COUNT, lädt keine Details
-            Tags         = string.Join(",", i.Tags!.OrderBy(t => t.Name).Select(t => t.Name)),
-            MinValue     = i.Details!.Where(d => d.Value != null).Min(d => d.Value),
-        })
+            query = query.Where(i => i.CategoryId == categoryId);   // → SQL WHERE
+        }
+
+        return await query
+            .OrderBy(i => i.CreationDate)
+            .ThenBy(i => i.Name)
+            .Select(i => new ItemOverviewDto(
+                i.Id,
+                i.CreationDate,
+                i.Name,
+                i.Description,
+                i.CategoryId,
+                i.Category != null ? i.Category.Name : null,
+                i.Details!.Count(),                              // → SQL COUNT, lädt keine Details
+                i.Tags!.OrderBy(t => t.Description).Select(t => t.Description).ToList()))
+            .ToListAsync();
+    }
+}
+----
+
+[source,csharp]
+----
+// Auswertung: Anzahl pro Wert (z. B. Bewertungen 1..5 je Item eines Tags) - alles in SQL
+public record RatingCountDto(int ItemId, string Name, int Count1, int Count2, int Count3,
+                             int Count4, int Count5);
+
+// in TagRepository: andere Tabelle über Context.Set<...>()
+public async Task<IList<RatingCountDto>> GetRatingCountsAsync(int tagId)
+{
+    var ratings = Context.Set<Rating>().Where(r => r.TagId == tagId);
+    return await DbSet.AsNoTracking()
+        .Where(t => t.Id == tagId)
+        .SelectMany(t => t.Items!)                    // alle Items des Tags (auch ohne Rating → 0)
+        .OrderBy(i => i.Name)
+        .Select(i => new RatingCountDto(i.Id, i.Name,
+            ratings.Count(r => r.ItemId == i.Id && r.Value == 1),
+            ratings.Count(r => r.ItemId == i.Id && r.Value == 2),
+            ratings.Count(r => r.ItemId == i.Id && r.Value == 3),
+            ratings.Count(r => r.ItemId == i.Id && r.Value == 4),
+            ratings.Count(r => r.ItemId == i.Id && r.Value == 5)))
         .ToListAsync();
 }
 ----
 
-* Alles vor `ToListAsync()` wird SQL → nie die ganze Tabelle laden. `Where` nur anhängen, wenn Filter gesetzt.
-* Weitere Aggregate: `.Max(...)`, `.Average(...)` (ignoriert NULL), `.Sum(...)`, `.Count(d => d.Value == null)`.
-* DTOs werden nicht getrackt → zum Ändern die Entity per Id neu laden.
-* Liste für die ComboBox: `await _uow.CategoryRepository.GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name))`.
+* Alles vor `ToListAsync()` wird SQL → nie die ganze Tabelle laden. `Where` nur anhängen, wenn ein Filter gesetzt ist.
+* Weitere Aggregate: `.Min(...)`, `.Max(...)`, `.Average(...)`, `.Sum(...)`, `.Count(d => d.Color == null)`. Min/Max/Average im DTO als
+  `double?` (ohne Werte → NULL). DTOs werden nicht getrackt → zum Ändern die Entity per Id neu laden.
+* *Neues Repository:* Interface (`Core/Contracts`) + Klasse (`Persistence`) + Property in `IUnitOfWork` *und* `UnitOfWork`
+  (Konstruktor-Parameter) + `.AddTransient<IXxxRepository, XxxRepository>()` in *beiden* Programmen (Import + Wpf).
 
 === UnitOfWork / GenericRepository der Vorlage
 
 [cols="3,2"]
 |===
 | `await _uow.ItemRepository.GetNoTrackingAsync(filter, orderBy, includes)` | Liste nur lesen
+| `await _uow.CategoryRepository.GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name))` | sortierte Liste (ComboBox)
 | `await _uow.ItemRepository.GetAsync(...)` / `GetByIdAsync(id)` | getrackt laden (zum Ändern)
 | `await _uow.ItemRepository.GetNoTrackingByIdAsync(id, nameof(Item.Details))` | ein Objekt lesen, Include als String
 | `CountAsync(filter)` / `ExistsAsync(id)` | Anzahl / existiert?
 | `await AddAsync(entity)` / `Remove(entity)` | neu / löschen (erst mit SaveChanges in der DB)
-| `await _uow.SaveChangesAsync()` | speichern
+| `await _uow.SaveChangesAsync()` | speichern (validiert die Attribute der Entities)
 | `using var trans = _uow.BeginTransaction(); ... await trans.CommitTransactionAsync();` | Commit speichert selbst, ohne Commit → Rollback
+| `DeleteDatabaseAsync()` / `CreateDatabaseAsync()` / `MigrateDatabaseAsync()` | DB löschen / anlegen (EnsureCreated) / migrieren
 |===
 
-=== ImportService (eine Transaktion pro Datensatz)
+[[import]]
+=== Import Schritt 1: Parser (Core, reine Logik)
 
 [source,csharp]
 ----
-public class ImportService : IImportService              // Persistence; in DI registrieren
+// Core/Domain/Step.cs - reines Datenobjekt, KEINE Entity (Vorlage bringt so etwas oft mit)
+public record Step(int Kind, int Repeat, int? Color);
+
+// Core/Domain/ItemParser.cs
+public static class ItemParser
+{
+    public const int DefaultColor = 0;
+
+    // Ziffern = Prefix (mehrstellig) · '$' = Farbe := Prefix · 'A'..'H' = Schritt mit Farbe
+    // 'a'..'h' = Schritt ohne Zeichnen (Color null) · alles andere ignorieren
+    public static List<Step> Parse(string content)
+    {
+        var  steps        = new List<Step>();
+        int? prefix       = null;                      // null = keine Zahl davor
+        int  currentColor = DefaultColor;
+
+        foreach (char c in content)
+        {
+            if (char.IsAsciiDigit(c))
+            {
+                prefix = (prefix ?? 0) * 10 + (c - '0');
+            }
+            else if (c == '$')
+            {
+                currentColor = prefix ?? DefaultColor;
+                prefix       = null;
+            }
+            else if (c is >= 'A' and <= 'H')
+            {
+                steps.Add(new Step(c - 'A', prefix ?? 1, currentColor));
+                prefix = null;
+            }
+            else if (c is >= 'a' and <= 'h')
+            {
+                steps.Add(new Step(c - 'a', prefix ?? 1, null));
+                prefix = null;
+            }
+            // sonst: unbekanntes Zeichen (Leerzeichen, \n) ignorieren
+        }
+        return steps;
+    }
+}
+----
+
+* Der Parser kennt keine DB → testbar und im Designer nutzbar. Er liefert Domain-Records, der ImportService macht Entities daraus.
+* Gibt die Vorlage ein `enum` (z. B. `Direction` A..H) vor: `(Direction)(c - 'A')` und im Record `Direction` statt `int`.
+* Anderes Dateiformat (Zeilen, Trennzeichen, `n*wert`, CSV): Muster in <<logik>>, Rückgabe bleibt eine `List<Record>`.
+
+=== Import Schritt 2: ImportService (EIN Datensatz, eine Transaktion)
+
+[source,csharp]
+----
+// Core/Contracts/IImportService.cs
+public interface IImportService
+{
+    Task ImportItemAsync(string name, string? description, string? category,
+                         DateOnly creationDate, string fileName);
+}
+
+// Persistence/ImportService.cs
+using ItemParser = Core.Domain.ItemParser;   // Alias: Domain-Typ heißt evtl. gleich wie Entity
+
+public class ImportService : IImportService
 {
     private readonly IUnitOfWork _uow;
     public ImportService(IUnitOfWork uow) => _uow = uow;
 
     public async Task ImportItemAsync(string name, string? description, string? category,
-                                      DateOnly date, string fileName)
+                                      DateOnly creationDate, string fileName)
     {
-        var details = Parser.Parse(await File.ReadAllTextAsync(fileName));  // eigener Parser
+        // 1. Datei lesen + parsen (noch keine DB)
+        var steps = ItemParser.Parse(await File.ReadAllTextAsync(fileName));
 
-        using var trans = _uow.BeginTransaction();
+        // 2. eine Transaktion pro Datensatz: Fehler → Dispose ohne Commit = Rollback
+        using var transaction = _uow.BeginTransaction();
 
-        if (await _uow.ItemRepository.CountAsync(i => i.Name == name) > 0)
-            throw new InvalidOperationException($"'{name}' existiert bereits.");
+        // 3. optionale Category: vorhandene suchen, sonst neu anlegen (OHNE eigenes AddAsync)
+        Category? categoryEntity = null;
+        if (!string.IsNullOrWhiteSpace(category))
+        {
+            categoryEntity = (await _uow.CategoryRepository.GetAsync(c => c.Name == category))
+                             .SingleOrDefault()
+                             ?? new Category { Code = category, Name = category };
+        }
 
-        for (int i = 0; i < details.Count; i++)
-            details[i].SeqNo = i + 1;                    // laufende Nummer ab 1
-
+        // 4. Item + Kinder über Navigation-Properties aufbauen (keine Ids setzen)
         var item = new Item
         {
             Name         = name,
             Description  = description,
-            CreationDate = date,
-            Category     = string.IsNullOrWhiteSpace(category)
-                               ? null
-                               : await GetOrCreateCategoryAsync(category),
-            Details      = details,                      // Navigation-Property, keine Ids
+            CreationDate = creationDate,
+            Category     = categoryEntity,
+            Details      = steps
+                .Select((s, idx) => new Detail            // Domain-Record → Entity, idx = SeqNo
+                {
+                    SeqNo  = idx,
+                    Kind   = s.Kind,
+                    Repeat = s.Repeat,
+                    Color  = s.Color,
+                })
+                .ToList(),
         };
-        await _uow.ItemRepository.AddAsync(item);        // EIN Add: Kinder kommen mit
-        await trans.CommitTransactionAsync();
-    }
 
-    private async Task<Category> GetOrCreateCategoryAsync(string name)
-    {
-        var existing = (await _uow.CategoryRepository.GetAsync(c => c.Name == name))
-                       .FirstOrDefault();
-        if (existing != null) return existing;
-        var category = new Category { Name = name };
-        await _uow.CategoryRepository.AddAsync(category);
-        return category;
-    }
-
-    public async Task ImportFolderAsync(string root)    // alle Dateien eines Ordnerbaums
-    {
-        foreach (var dir in Directory.GetDirectories(root))
-            foreach (var file in Directory.GetFiles(dir, "*.txt"))
-            {
-                var name  = Path.GetFileNameWithoutExtension(file);
-                var parts = name.Split('_');
-                var date  = parts.Length > 1
-                            && DateOnly.TryParseExact(parts[^1], "yyyyMMdd",
-                                   CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
-                    ? d : DateOnly.FromDateTime(DateTime.Today);
-                await ImportItemAsync(name, Path.GetRelativePath(root, file),
-                                      Path.GetFileName(dir), date, file);
-            }
+        // 5. EIN AddAsync: neue Category + alle Details werden mitgespeichert (kein AddRange)
+        await _uow.ItemRepository.AddAsync(item);
+        await transaction.CommitTransactionAsync();       // SaveChanges + Commit
     }
 }
 ----
 
-* Objekte nur über Navigation-Properties verbinden (`Category = ...`, `Details = ...`), Ids nicht setzen. Kein `AddRange`.
-* Pro Datensatz eine Transaktion → nach dem Commit findet `GetOrCreate` die neue Category (keine Duplikate).
-* Entity-Listen initialisieren: `public List<Detail> Details { get; set; } = new();`
+* Doppelte Namen: der Unique-Index wirft beim Commit, der Aufrufer zeigt die Meldung. Explizit vorher prüfen geht auch:
+  `if (await _uow.ItemRepository.CountAsync(i => i.Name == name) > 0) throw new InvalidOperationException(...)`.
+* Derselbe Service wird vom Konsolen-Import *und* vom Import-Dialog der WPF-App verwendet.
+
+=== Import Schritt 3: Program.cs im Import-Projekt
 
 [source,csharp]
 ----
-// ImportConsoleApp/Program.cs
-Console.WriteLine("Import ...");
-using var scope = AppService.ServiceProvider!.CreateScope();   // bzw. wie in der Vorlage
-var import = scope.ServiceProvider.GetRequiredService<IImportService>();
-try
+// ImportConsoleApp/Program.cs  (using System.Globalization; ergänzen)
+ConfigureDependencyInjector();
+await RecreateDatabaseAsync();
+await ImportAsync();
+
+void ConfigureDependencyInjector()
 {
-    await import.ImportFolderAsync(Path.Combine(AppContext.BaseDirectory, "ImportData"));
+    var configuration    = ConfigurationHelper.GetConfiguration();
+    var connectionString = configuration.GetConnectionString("DefaultConnection")
+                           ?? throw new InvalidOperationException("Connection string missing.");
+
+    AppService.ServiceCollection = new ServiceCollection();
+    AppService.ServiceCollection
+        .AddSingleton(configuration)
+        .AddDbContext<ApplicationDbContext>(o => o.UseSqlServer(connectionString))
+        .AddScoped<IUnitOfWork, UnitOfWork>()
+        .AddTransient<IItemRepository, ItemRepository>()        // jedes Repository
+        .AddTransient<ICategoryRepository, CategoryRepository>()
+        .AddTransient<IDetailRepository, DetailRepository>()
+        .AddTransient<IImportService, ImportService>();
+    AppService.BuildServiceProvider();
 }
-catch (Exception ex) { Console.WriteLine(ex.GetBaseException().Message); }
+
+async Task RecreateDatabaseAsync()
+{
+    using var scope = AppService.ServiceProvider!.CreateScope();
+    var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+    Console.WriteLine("Deleting database ...");
+    await uow.DeleteDatabaseAsync();
+    Console.WriteLine("Creating database ...");
+    await uow.CreateDatabaseAsync();       // ODER await uow.MigrateDatabaseAsync(); - nie beides
+}
+
+async Task ImportAsync()
+{
+    int countTotal    = 0;
+    var baseDirectory = Path.Combine(AppContext.BaseDirectory, "ImportData");
+
+    foreach (var folder in Directory.GetDirectories(baseDirectory))  // nur Unterordner, 1 Ebene
+    {
+        var category = Path.GetFileName(folder);                      // Ordnername
+        foreach (var file in Directory.GetFiles(folder, "*.txt"))
+        {
+            var name        = Path.GetFileNameWithoutExtension(file);     // "Sample_20250225"
+            var description = Path.GetRelativePath(baseDirectory, file);  // "GroupA\Sample_..."
+            var date        = GetDateFromName(name);
+
+            // eigener Scope = eigener DbContext: eine kaputte Datei stört die nächste nicht
+            using var scope   = AppService.ServiceProvider!.CreateScope();
+            var importService = scope.ServiceProvider.GetRequiredService<IImportService>();
+            try
+            {
+                await importService.ImportItemAsync(name, description, category, date, file);
+                countTotal++;
+                Console.WriteLine($"  OK    {description} ({date:yyyy.MM.dd})");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  ERROR {description}: {ex.GetBaseException().Message}");
+            }
+        }
+    }
+    Console.WriteLine($"Import done: {countTotal} files");
+}
+
+// "Sample_20250225" → 2025-02-25, kein gültiges Datum am Ende → heute
+DateOnly GetDateFromName(string name)
+{
+    var idx = name.LastIndexOf('_');
+    if (idx >= 0 && DateOnly.TryParseExact(name[(idx + 1)..], "yyyyMMdd",
+                        CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+    {
+        return date;
+    }
+    return DateOnly.FromDateTime(DateTime.Today);
+}
 ----
+
+* *Entweder* `CreateDatabaseAsync()` (EnsureCreated, kein Migrations-Ordner) *oder* `MigrateDatabaseAsync()` (es gibt
+  Migrationen). Nach EnsureCreated schlägt Migrate fehl.
+* Dateien direkt in `ImportData` werden *nicht* importiert (nur Unterordner), z. B. eine Demo-Datei für den Import-Dialog.
+* `ImportData` liegt oft in Persistence: dort *Copy if newer*, dann landet es über die Projektreferenz auch im `bin` des Imports.
+* Starten mit F5 oder `dotnet run` *im Projektordner*: `ConfigurationHelper` liest `appsettings.json` aus dem aktuellen Ordner.
 
 === Ohne Vorlage: EF Core direkt
 
@@ -708,78 +864,101 @@ catch { await tx.RollbackAsync(); throw; }
 [[vm]]
 == Model und ViewModel
 
-=== Properties und Listen
+=== Aufbau eines ViewModels (Vorlage)
+
+* Regionen: `#region crt` (Controller, Repositories, Konstruktor mit *allen* Commands) → `#region Properties/Commands`
+  (Backing-Field + Property mit `SetProperty`, Commands als `ICommand { get; }`) → `#region Operations` (Laden, Speichern, Dialoge).
+* Erben von `ValidatableBaseViewModel` (bzw. `BaseViewModel`), Pflicht: `public override Task InitializeDataAsync()`.
+* Commands der Vorlage: `new RelayCommand(Execute, CanExecute)` ohne Parameter,
+  `new RelayCommandParam(p => ..., p => ...)` mit `CommandParameter`.
+* Listen als `IList<T>`-Property mit `SetProperty` und *ganz ersetzen* (`Items = await ...`) → das UI aktualisiert sich.
+  `ObservableCollection<T> { get; } = new()` nur, wenn einzelne Einträge ohne Neuladen dazukommen/wegfallen (`Add`/`Remove`).
+
+=== Haupt-ViewModel: Filter, Liste, Edit/Update, Dialoge
 
 [source,csharp]
 ----
-private string? _name;
-public string? Name { get => _name; set => SetProperty(ref _name, value); }
-
-private int _count;                                  // abhängige Property mitmelden
-public int Count
+// Wpf.ViewModels/Models/CategoryItem.cs - Eintrag einer ComboBox, Id null = "<All>"/"<none>"
+public record CategoryItem(int? Id, string Name)
 {
-    get => _count;
-    set { if (SetProperty(ref _count, value)) OnPropertyChanged(nameof(IsEmpty)); }
+    public override string ToString() => Name;
 }
-public bool IsEmpty => Count == 0;
-
-public ObservableCollection<ItemDto> Items { get; } = new();   // nie ersetzen: Clear()/Add()
 ----
-
-* `List<T>` meldet nichts ans UI, `ObservableCollection<T>` schon. Ändert sich eine Property *eines Elements*,
-  muss die Elementklasse selbst `INotifyPropertyChanged` implementieren.
-
-=== Haupt-ViewModel (DB): Filter, Auswahl, Edit/Update, Dialoge
 
 [source,csharp]
 ----
-public class MainWindowViewModel : BaseViewModel
+public class MainWindowViewModel : ValidatableBaseViewModel
 {
-    private readonly IUnitOfWork _uow;
-    public IWindowNavigator? Controller { get; set; }
+    #region crt
+
+    public           IWindowNavigator? Controller { get; set; }
+    private readonly IUnitOfWork       _uow;
 
     public MainWindowViewModel(IUnitOfWork uow)
     {
         _uow = uow;
+
         FilterCommand  = new RelayCommand(async () => await LoadItemsAsync());
-        DetailsCommand = new RelayCommand(() => Controller?.ShowDetails(SelectedItem!.Id),
-                                          () => SelectedItem != null);
+        DetailsCommand = new RelayCommand(ShowDetails, () => SelectedItem != null);
         EditCommand    = new RelayCommand(() => IsEditing = true,
                                           () => SelectedItem != null && !IsEditing);
-        UpdateCommand  = new RelayCommand(async () => await UpdateAsync(), () => IsEditing);
-        ImportCommand  = new RelayCommand(async () =>
-        {
-            if (Controller?.ShowImport() == true) await InitializeDataAsync();  // neu laden
-        });
+        UpdateCommand  = new RelayCommand(async () => await UpdateCategoryAsync(),
+                                          () => SelectedItem != null && IsEditing);
+        ImportCommand  = new RelayCommand(async () => await ImportAsync());   // immer aktiv
     }
 
-    #region Properties
-    public ObservableCollection<Category> Categories     { get; } = new();  // Filter "<All>"
-    public ObservableCollection<Category> EditCategories { get; } = new();  // Edit "<None>"
-    public ObservableCollection<ItemDto>  Items          { get; } = new();
+    #endregion
 
-    private Category? _selectedCategory;
-    public Category? SelectedCategory
+    #region Properties/Commands
+
+    private static readonly CategoryItem AllItem  = new(null, "<All>");     // einmal erzeugen
+    private static readonly CategoryItem NoneItem = new(null, "<none>");
+
+    private IList<CategoryItem> _filterCategories = [];
+    public IList<CategoryItem> FilterCategories
     {
-        get => _selectedCategory;
-        set => SetProperty(ref _selectedCategory, value);
+        get => _filterCategories;
+        set => SetProperty(ref _filterCategories, value);
     }
 
-    private ItemDto? _selectedItem;
-    public ItemDto? SelectedItem
+    private CategoryItem? _selectedFilterCategory;
+    public CategoryItem? SelectedFilterCategory
+    {
+        get => _selectedFilterCategory;
+        set => SetProperty(ref _selectedFilterCategory, value);
+    }
+
+    private IList<ItemOverviewDto> _items = [];
+    public IList<ItemOverviewDto> Items
+    {
+        get => _items;
+        set => SetProperty(ref _items, value);
+    }
+
+    private ItemOverviewDto? _selectedItem;
+    public ItemOverviewDto? SelectedItem
     {
         get => _selectedItem;
         set
         {
-            if (!SetProperty(ref _selectedItem, value)) return;
-            // gleiche Instanz wie in ItemsSource suchen, nicht neu erzeugen
-            SelectedEditCategory = EditCategories
-                .FirstOrDefault(c => c.Id == (value?.CategoryId ?? 0));
+            if (SetProperty(ref _selectedItem, value))
+            {
+                IsEditing            = false;                 // neue Auswahl bricht Edit ab
+                SelectedEditCategory = EditCategories
+                    .FirstOrDefault(c => c.Id == value?.CategoryId) ?? NoneItem;
+            }
         }
     }
 
-    private Category? _selectedEditCategory;
-    public Category? SelectedEditCategory
+    private IList<CategoryItem> _editCategories = [];
+    public IList<CategoryItem> EditCategories
+    {
+        get => _editCategories;
+        set => SetProperty(ref _editCategories, value);
+    }
+
+    private CategoryItem? _selectedEditCategory;
+    public CategoryItem? SelectedEditCategory
     {
         get => _selectedEditCategory;
         set => SetProperty(ref _selectedEditCategory, value);
@@ -789,65 +968,316 @@ public class MainWindowViewModel : BaseViewModel
     public bool IsEditing
     {
         get => _isEditing;
-        set { if (SetProperty(ref _isEditing, value)) OnPropertyChanged(nameof(IsNotEditing)); }
+        set => SetProperty(ref _isEditing, value);
     }
-    public bool IsNotEditing => !IsEditing;              // statt Inverter-Converter
-    #endregion
 
-    #region Commands
     public ICommand FilterCommand  { get; }
     public ICommand DetailsCommand { get; }
     public ICommand EditCommand    { get; }
     public ICommand UpdateCommand  { get; }
     public ICommand ImportCommand  { get; }
+
     #endregion
 
-    #region Operations
-    public override async Task InitializeDataAsync()      // läuft bei Loaded (Programmstart)
+    // Buttons sofort neu prüfen, wenn sich der Zustand ohne Eingabe ändert (z. B. nach await)
+    protected override void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {
-        var categories = await _uow.CategoryRepository
-            .GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name));
-        Categories.Clear();
-        Categories.Add(new Category { Id = 0, Name = "<All>" });     // Platzhalter, nie speichern
-        EditCategories.Clear();
-        EditCategories.Add(new Category { Id = 0, Name = "<None>" });
-        foreach (var c in categories) { Categories.Add(c); EditCategories.Add(c); }
-        SelectedCategory = Categories[0];                            // Vorauswahl
+        base.OnPropertyChanged(propertyName);
+        if (propertyName is nameof(IsEditing) or nameof(SelectedItem))
+        {
+            CommandManager.InvalidateRequerySuggested();
+        }
+    }
+
+    #region Operations
+
+    public override async Task InitializeDataAsync()         // läuft bei Loaded (Programmstart)
+    {
+        await LoadCategoriesAsync();
         await LoadItemsAsync();
+    }
+
+    private async Task LoadCategoriesAsync()
+    {
+        var categories = (await _uow.CategoryRepository
+                .GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name)))
+            .Select(c => new CategoryItem(c.Id, c.Name))
+            .ToList();
+
+        var previousFilterId   = SelectedFilterCategory?.Id;
+        FilterCategories       = [AllItem, .. categories];      // Platzhalter + DB-Einträge
+        EditCategories         = [NoneItem, .. categories];
+        SelectedFilterCategory = FilterCategories.FirstOrDefault(c => c.Id == previousFilterId)
+                                 ?? AllItem;
     }
 
     private async Task LoadItemsAsync()
     {
+        var selectedId = SelectedItem?.Id;                      // Auswahl merken
+        Items        = await _uow.ItemRepository.GetOverviewAsync(SelectedFilterCategory?.Id);
+        SelectedItem = Items.FirstOrDefault(i => i.Id == selectedId);
+    }
+
+    private void ShowDetails() => Controller!.ShowDetails(SelectedItem!.Id);
+
+    private async Task UpdateCategoryAsync()
+    {
         try
         {
-            int? filterId = SelectedCategory is { Id: > 0 } c ? c.Id : null;  // "<All>" → null
-            var items = await _uow.ItemRepository.GetOverviewAsync(filterId);
-            Items.Clear();                                                   // sonst doppelt
-            foreach (var i in items) Items.Add(i);
+            var item = await _uow.ItemRepository.GetByIdAsync(SelectedItem!.Id);   // getrackt
+            if (item == null)
+            {
+                Controller!.ShowMessageBox("The item no longer exists.");
+                return;
+            }
+            item.CategoryId = SelectedEditCategory?.Id;         // null = keine (nullable FK)
+            await _uow.SaveChangesAsync();
+            IsEditing = false;
+            await LoadItemsAsync();                             // Spalte zeigt den neuen Wert
         }
         catch (Exception ex)
         {
-            Controller?.ShowMessageBox($"Fehler: {ex.GetBaseException().Message}");
+            Controller!.ShowMessageBox($"Update failed: {ex.GetBaseException().Message}");
         }
     }
 
-    private async Task UpdateAsync()
+    private async Task ImportAsync()
     {
-        var item = await _uow.ItemRepository.GetByIdAsync(SelectedItem!.Id);     // getrackt
-        item!.CategoryId = SelectedEditCategory is { Id: > 0 } c ? c.Id : null;  // "<None>" → null
-        await _uow.SaveChangesAsync();
-        IsEditing = false;
-        await LoadItemsAsync();
+        if (Controller!.ShowImportDialog())                     // true = importiert
+        {
+            await LoadCategoriesAsync();                        // evtl. neue Category
+            await LoadItemsAsync();
+        }
     }
+
     #endregion
 }
 ----
 
-* Pro Button: `CanXxx` (Lambda oder Methode) + `Xxx` + `XxxCommand`, Command *einmal* im Konstruktor erzeugen.
-* `Save` ohne Klammern übergibt die Methode, `Save()` ruft sie auf (Compilerfehler).
-* Async-Lambdas im Command sind `async void` → Fehler immer mit `try/catch` abfangen, sonst Absturz.
-* `SelectedItem` einer ComboBox braucht dieselbe *Instanz* wie in `ItemsSource` → per Id suchen.
-* Bearbeitet wird nur, was `Update` speichert. Andere Felder im Edit-Modus sperren (`IsReadOnly`/`IsEnabled`).
+* Pro Button: Command im Konstruktor + `ICommand`-Property + `CanExecute`-Lambda. Methode ohne Klammern übergeben (`ShowDetails`).
+* `"<All>"`/`"<none>"` als `static readonly` → `?? AllItem` findet dieselbe Instanz, die ComboBox zeigt die Auswahl.
+* Async-Lambdas sind `async void` → Fehler in der Operation mit `try/catch` abfangen und per `ShowMessageBox` zeigen.
+
+=== Dialog-ViewModel: Eingabe mit Validierung
+
+[source,csharp]
+----
+public class ImportViewModel : ValidatableBaseViewModel, IValidatableObject
+{
+    #region crt
+
+    public           IWindowNavigator? Controller { get; set; }
+    private readonly IImportService    _importService;
+
+    public ImportViewModel(IImportService importService)
+    {
+        _importService = importService;
+
+        ImportCommand = new RelayCommand(async () => await ImportAsync(), () => IsValid && !IsBusy);
+        CloseCommand  = new RelayCommand(() => Controller!.CloseWindow(false));
+
+        // Defaultwerte ÜBER die Properties setzen → validiert sofort (Button richtig aktiv)
+        Name        = "Sample";
+        Description = "Sample description";
+        Category    = "Demo";
+        FileName    = Path.Combine("ImportData", "Sample.txt");
+    }
+
+    #endregion
+
+    #region Properties/Commands
+
+    private string _name = string.Empty;
+    [Required(ErrorMessage = "Name is required")]
+    [MaxLength(256)]
+    public string Name
+    {
+        get => _name;
+        set => SetProperty(ref _name, value);
+    }
+
+    private string? _description;
+    [MaxLength(2000)]
+    public string? Description
+    {
+        get => _description;
+        set => SetProperty(ref _description, value);
+    }
+
+    private string? _category;
+    [MaxLength(16)]
+    public string? Category
+    {
+        get => _category;
+        set => SetProperty(ref _category, value);
+    }
+
+    private string _fileName = string.Empty;
+    [Required(ErrorMessage = "Filename is required")]
+    public string FileName
+    {
+        get => _fileName;
+        set => SetProperty(ref _fileName, value);
+    }
+
+    private bool _isBusy;
+    public bool IsBusy
+    {
+        get => _isBusy;
+        set => SetProperty(ref _isBusy, value);
+    }
+
+    public ICommand ImportCommand { get; }
+    public ICommand CloseCommand  { get; }
+
+    #endregion
+
+    protected override void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+    {
+        base.OnPropertyChanged(propertyName);                 // validiert alle Properties
+        if (propertyName is nameof(IsValid) or nameof(IsBusy))
+        {
+            CommandManager.InvalidateRequerySuggested();
+        }
+    }
+
+    // eigene Regeln: läuft nach den Attributen (Validator ruft es automatisch auf)
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (!File.Exists(FileName))
+        {
+            yield return new ValidationResult("File does not exist", [nameof(FileName)]);
+        }
+    }
+
+    #region Operations
+
+    public override Task InitializeDataAsync() => Task.CompletedTask;
+
+    private async Task ImportAsync()
+    {
+        IsBusy = true;
+        try
+        {
+            await _importService.ImportItemAsync(
+                Name.Trim(),
+                string.IsNullOrWhiteSpace(Description) ? null : Description.Trim(),   // "" → null
+                string.IsNullOrWhiteSpace(Category)    ? null : Category.Trim(),
+                DateOnly.FromDateTime(DateTime.Today),
+                FileName);
+            Controller!.CloseWindow(true);                    // nach Erfolg schließen
+        }
+        catch (Exception ex)
+        {
+            // z. B. doppelter Name: Dialog bleibt offen, Benutzer kann korrigieren
+            Controller!.ShowMessageBox($"Import failed: {ex.GetBaseException().Message}");
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    #endregion
+}
+----
+
+* Attribute: `[Required]`, `[MaxLength(n)]`, `[StringLength(50, MinimumLength = 2)]`, `[Range(1, 5)]`,
+  `[RegularExpression(@"^\d+$", ErrorMessage = "...")]`. Längen wie im Mapping der Entity wählen.
+* `IValidatableObject.Validate` für Regeln über Dateien/mehrere Properties. Alternative: `[CustomValidation(typeof(X), nameof(M))]`
+  mit `public static ValidationResult? M(string? value, ValidationContext ctx)`.
+
+=== Dialog-ViewModel: Details eines Datensatzes laden
+
+[source,csharp]
+----
+using Step = Core.Domain.Step;                           // Alias bei Namensgleichheit mit Entity
+
+public class DetailViewModel : ValidatableBaseViewModel
+{
+    public           IWindowNavigator? Controller { get; set; }
+    private readonly IUnitOfWork       _uow;
+
+    public DetailViewModel(IUnitOfWork uow)
+    {
+        _uow         = uow;
+        CloseCommand = new RelayCommand(() => Controller!.CloseWindow(true));   // immer aktiv
+    }
+
+    public int ItemId { get; set; }                       // setzt der Navigator VOR ShowDialog
+
+    private string? _name;
+    public string? Name
+    {
+        get => _name;
+        set => SetProperty(ref _name, value);
+    }
+
+    private DateOnly? _creationDate;
+    public DateOnly? CreationDate
+    {
+        get => _creationDate;
+        set => SetProperty(ref _creationDate, value);
+    }
+
+    private IList<Step> _steps = [];
+    public IList<Step> Steps                              // → Custom Draw
+    {
+        get => _steps;
+        set => SetProperty(ref _steps, value);
+    }
+
+    public ICommand CloseCommand { get; }
+
+    public override async Task InitializeDataAsync()
+    {
+        // nur DIESES eine Item mit seinen Details laden
+        var item = await _uow.ItemRepository.GetNoTrackingByIdAsync(ItemId, nameof(Item.Details));
+        if (item == null)
+        {
+            Controller!.ShowMessageBox("Item not found.");
+            Controller.CloseWindow(false);
+            return;
+        }
+
+        Name         = item.Name;
+        CreationDate = item.CreationDate;
+        Steps        = (item.Details ?? [])                // Entities → Domain-Records, sortiert
+            .OrderBy(d => d.SeqNo)
+            .Select(d => new Step(d.Kind, d.Repeat, d.Color))
+            .ToList();
+    }
+}
+----
+
+=== Design-Daten für den XAML-Designer (optional)
+
+[source,csharp]
+----
+// Wpf/DesignData/MainWindowDesignViewModel.cs - nur der Designer erzeugt das, keine DB
+public class MainWindowDesignViewModel : MainWindowViewModel
+{
+    public MainWindowDesignViewModel() : base(null!)          // UnitOfWork wird nie benutzt
+    {
+        FilterCategories = [new CategoryItem(null, "<All>"), new CategoryItem(1, "GroupA")];
+        Items =
+        [
+            new ItemOverviewDto(1, new DateOnly(2025, 2, 25), "Sample1", null,
+                                1, "GroupA", 44, ["A"]),
+            new ItemOverviewDto(2, new DateOnly(2025, 3, 2), "Sample2", null,
+                                null, null, 8, []),
+        ];
+    }
+}
+// DetailDesignViewModel: Steps = ItemParser.Parse("2A3b$1C 4D") → Designer zeigt echte Zeichnung
+----
+
+[source,xml]
+----
+<Window ... xmlns:design="clr-namespace:Wpf.DesignData"
+        d:DataContext="{d:DesignInstance Type=design:MainWindowDesignViewModel,
+                                         IsDesignTimeCreatable=True}">
+----
 
 === ViewModel mit Datei (Vorlage A): DTO und Model, Laden, Speichern
 
@@ -929,89 +1359,6 @@ public class MainViewModel : NotifyPropertyChanged
 * XAML verschachtelt: `Text="{Binding Document.NewTime, UpdateSourceTrigger=PropertyChanged}"`.
 * Muss die Liste sortiert bleiben: nach dem Hinzufügen `Clear()` + sortiert neu `Add`.
 
-=== Dialog-ViewModels: Eingabe mit Validierung, Details per Id
-
-[source,csharp]
-----
-public class ImportViewModel : ValidatableBaseViewModel  // Base: HasErrors, IsValid, AddError
-{
-    private readonly IImportService _import;
-    public IWindowNavigator? Controller { get; set; }
-
-    public ImportViewModel(IImportService import)
-    {
-        _import       = import;
-        ImportCommand = new RelayCommand(async () => await ImportAsync(), () => IsValid);
-        CloseCommand  = new RelayCommand(() => Controller?.CloseWindow());
-    }
-
-    private string _name = "Sample";                     // sinnvolle Defaultwerte
-    [Required(ErrorMessage = "Name is required")]
-    public string Name { get => _name; set => SetProperty(ref _name, value); }
-
-    private string? _description, _category;             // optional → ohne [Required]
-    public string? Description { get => _description; set => SetProperty(ref _description, value); }
-    public string? Category    { get => _category;    set => SetProperty(ref _category, value); }
-
-    private string _fileName = "ImportData/sample.txt";
-    [Required, CustomValidation(typeof(ImportViewModel), nameof(ValidateFileName))]
-    public string FileName { get => _fileName; set => SetProperty(ref _fileName, value); }
-
-    public static ValidationResult? ValidateFileName(string? fileName, ValidationContext ctx)
-        => File.Exists(fileName)                         // Methode muss public static sein
-            ? ValidationResult.Success
-            : new ValidationResult("File does not exist", new[] { nameof(FileName) });
-
-    public ICommand ImportCommand { get; }
-    public ICommand CloseCommand  { get; }
-
-    public override Task InitializeDataAsync()
-    {
-        ValidateViewModelProperties();                   // sonst IsValid bis zur 1. Eingabe falsch
-        return Task.CompletedTask;
-    }
-
-    private async Task ImportAsync()
-    {
-        try
-        {
-            var today = DateOnly.FromDateTime(DateTime.Today);
-            await _import.ImportItemAsync(Name, Description, Category, today, FileName);
-            Controller?.CloseWindow();                   // DialogResult = true → Aufrufer lädt neu
-        }
-        catch (Exception ex) { Controller?.ShowMessageBox(ex.GetBaseException().Message); }
-    }
-}
-
-public class DetailViewModel : BaseViewModel
-{
-    private readonly IUnitOfWork _uow;
-    public IWindowNavigator? Controller { get; set; }
-    public int ItemId { get; set; }                      // vom Navigator VOR ShowDialog gesetzt
-
-    public DetailViewModel(IUnitOfWork uow)
-    {
-        _uow         = uow;
-        CloseCommand = new RelayCommand(() => Controller?.CloseWindow());
-    }
-
-    private Item? _item;
-    public Item? Item { get => _item; set => SetProperty(ref _item, value); }
-    public ICommand CloseCommand { get; }
-
-    public override async Task InitializeDataAsync()
-        => Item = await _uow.ItemRepository.GetNoTrackingByIdAsync(ItemId, nameof(Item.Details));
-}
-----
-
-* Weitere Attribute: `[StringLength(50, MinimumLength = 2)]`, `[Range(1, 5)]`,
-  `[RegularExpression(@"^\d+$", ErrorMessage = "Nur Ziffern")]`.
-* Geprüft werden nur Properties *dieses* ViewModels. Eigene Regel: nach `ValidateViewModelProperties()` `AddError(nameof(X), "...")`.
-* Ohne Vorlage reicht meist ein `CanExecute` mit Prüfung, z. B. `() => File.Exists(FileName)`.
-* Fehlertext anzeigen:
-  `<TextBox x:Name="fileBox" Text="{Binding FileName, UpdateSourceTrigger=PropertyChanged, ValidatesOnNotifyDataErrors=True}"/>`
-  + `<TextBlock Foreground="Red" Text="{Binding (Validation.Errors)/ErrorContent, ElementName=fileBox}"/>`.
-
 === Async: UI bleibt bedienbar (Beispiel: Dateien durchsuchen)
 
 [source,csharp]
@@ -1064,8 +1411,8 @@ public async Task SearchAsync()                          // Task → im Test awa
 // Raster: Index-Binding auf ObservableCollection (ein Array aktualisiert NICHT)
 public ObservableCollection<string> Cells { get; } = new(Enumerable.Repeat("", 9));
 
-CellCommand = new RelayCommand(p => OnCell(int.Parse((string)p!)),       // "0".."8"
-                               p => int.TryParse(p as string, out var i) && Cells[i] == "");
+CellCommand = new RelayCommandParam(p => OnCell(int.Parse((string)p!)),  // "0".."8"
+                                    p => int.TryParse(p as string, out var i) && Cells[i] == "");
 
 // Muster im Raster prüfen (z. B. Reihen/Spalten/Diagonalen eines 3x3-Feldes)
 private static readonly int[][] Lines =
@@ -1074,12 +1421,12 @@ private bool AllSame(string v) => Lines.Any(l => l.All(i => Cells[i] == v));
 
 // Tastenfeld: Eingabe sammeln, Operation als Lambda merken, später ausführen
 private Func<double, double, double>? _op;
-InputCommand = new RelayCommand(p =>
+InputCommand = new RelayCommandParam(p =>
 {
     Display    = _newInput || Display == "0" ? (string)p! : Display + p;
     _newInput  = false;
 });
-OperatorCommand = new RelayCommand(p =>
+OperatorCommand = new RelayCommandParam(p =>
 {
     _left = double.Parse(Display);
     _op = (string)p! switch
@@ -1155,7 +1502,8 @@ MessageBox.Show("Text", "Titel", MessageBoxButton.OK, MessageBoxImage.Error);
 private void Application_Startup(object sender, StartupEventArgs e)
 {
     var configuration    = ConfigurationHelper.GetConfiguration();
-    var connectionString = configuration.GetConnectionString("DefaultConnection")!;
+    var connectionString = configuration.GetConnectionString("DefaultConnection")
+                           ?? throw new InvalidOperationException("Connection string missing.");
 
     AppService.ServiceCollection = new ServiceCollection();
     AppService.ServiceCollection
@@ -1164,8 +1512,10 @@ private void Application_Startup(object sender, StartupEventArgs e)
                            typeof(ViewModels.MainWindowViewModel).Assembly)  // alle ...ViewModel
         .AddDbContext<ApplicationDbContext>(o => o.UseSqlServer(connectionString))
         .AddScoped<IUnitOfWork, UnitOfWork>()
+        .AddTransient<IItemRepository, ItemRepository>()          // jedes Repository
+        .AddTransient<ICategoryRepository, CategoryRepository>()
         .AddTransient<IImportService, ImportService>()
-        .AddTransient<MainWindow>()                       // JEDES Fenster
+        .AddTransient<MainWindow>()                               // JEDES Fenster
         .AddTransient<DetailWindow>()
         .AddTransient<ImportWindow>();
     AppService.BuildServiceProvider();
@@ -1181,9 +1531,9 @@ private void Application_Startup(object sender, StartupEventArgs e)
 
 [source,csharp]
 ----
-public partial class DetailWindow : Window
+public partial class MainWindow : Window
 {
-    public DetailWindow(DetailViewModel viewModel)       // DI liefert das ViewModel
+    public MainWindow(MainWindowViewModel viewModel)       // DI liefert das ViewModel
     {
         InitializeComponent();
         viewModel.Controller = new WindowNavigator(this);
@@ -1191,19 +1541,22 @@ public partial class DetailWindow : Window
         Loaded += async (_, _) => await viewModel.InitializeDataAsync();   // Daten laden
     }
 }
+// DetailWindow genauso (lädt in InitializeDataAsync).
+// ImportWindow: dieselben Zeilen OHNE Loaded (lädt nichts).
 ----
 
-* Kein `<Window.DataContext>` im XAML. Für IntelliSense nur `d:DataContext="{d:DesignInstance Type=vm:DetailViewModel}"`.
+* Kein `<Window.DataContext>` im XAML. Für IntelliSense nur `d:DataContext` (siehe Design-Daten bzw. <<xaml>>).
 
-=== WindowNavigator (Dialog öffnen, Parameter übergeben)
+=== WindowNavigator: was man zur leeren Vorlage ergänzt
 
 [source,csharp]
 ----
-// Wpf.ViewModels/IWindowNavigator.cs
-public interface IWindowNavigator : IBaseWindowNavigator
-{                                    // erbt CloseWindow, ShowMessageBox, AskYesNoMessageBox
-    void ShowDetails(int itemId);
-    bool ShowImport();
+// Wpf.ViewModels/IWindowNavigator.cs (Vorlage: leer)
+public interface IWindowNavigator : IBaseWindowNavigator  // erbt CloseWindow(), ShowMessageBox ...
+{
+    void ShowDetails(int itemId);              // modaler Dialog mit Parameter
+    bool ShowImportDialog();                   // true = OK → Aufrufer lädt neu
+    void CloseWindow(bool dialogResult);       // Dialog mit Ergebnis schließen
 }
 
 // Wpf/WindowNavigator.cs
@@ -1215,187 +1568,248 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
     {
         using var scope  = AppService.ServiceProvider!.CreateScope();   // eigener DbContext
         var       window = scope.ServiceProvider.GetRequiredService<DetailWindow>();
-        ((DetailViewModel)window.DataContext).ItemId = itemId;          // VOR ShowDialog
+        ((DetailViewModel)window.DataContext).ItemId = itemId;          // VOR ShowDialog setzen
         window.Owner = Window;
         window.ShowDialog();
     }
 
-    public bool ShowImport()
+    public bool ShowImportDialog()
     {
+        // eigener Scope: ein fehlgeschlagener Import bleibt nicht im DbContext des Hauptfensters
         using var scope  = AppService.ServiceProvider!.CreateScope();
         var       window = scope.ServiceProvider.GetRequiredService<ImportWindow>();
         window.Owner = Window;
-        return window.ShowDialog() == true;                              // true = OK
+        return window.ShowDialog() == true;
+    }
+
+    public void CloseWindow(bool dialogResult)
+    {
+        Window.DialogResult = dialogResult;    // schließt das modale Fenster
     }
 }
 ----
 
 * Pro Dialog: Methode im Interface (`Wpf.ViewModels`) + Umsetzung (`Wpf`) + Fenster in `App.xaml.cs` registrieren.
-* `CloseWindow()` setzt `DialogResult = true`. Das „X“ liefert `false`. Ja/Nein: `Controller?.AskYesNoMessageBox(caption, text)`.
+* Aufruf im ViewModel: `Controller!.ShowDetails(id)`, `if (Controller!.ShowImportDialog()) { neu laden }`,
+  `Controller!.CloseWindow(true/false)`, `Controller!.ShowMessageBox(text)`, `Controller!.AskYesNoMessageBox(caption, text)`.
+* Base-`CloseWindow()` ohne Parameter setzt immer `DialogResult = true`. Das „X“ oben rechts liefert `false`.
 * Ohne Vorlage: im ViewModel `public Action<bool>? CloseAction { get; set; }`, beim Öffnen
   `vm.CloseAction = r => window.DialogResult = r;` und `new DetailWindow { DataContext = vm, Owner = owner }.ShowDialog()`.
 
 [[xaml]]
 == XAML
 
-=== Hauptfenster: Filter, Liste, Bearbeiten, Buttons
+Ein Fenster = Grundgerüst + Bausteine. Jeden Baustein mit `Grid.Row="..."` in das Grundgerüst setzen.
+
+=== Grundgerüst (Grid: feste Zeilen + eine wachsende)
 
 [source,xml]
 ----
-<Window x:Class="Wpf.MainWindow" ... Title="Overview" Height="450" Width="800"
-        xmlns:vm="clr-namespace:Wpf.ViewModels;assembly=Wpf.ViewModels"
+<Window x:Class="Wpf.Views.MainWindow" ... Title="Overview" Height="460" Width="620"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="clr-namespace:Wpf.ViewModels;assembly=Wpf.ViewModels"
         mc:Ignorable="d" d:DataContext="{d:DesignInstance Type=vm:MainWindowViewModel}">
-    <Window.Resources>
-        <Style TargetType="Button">
-            <Setter Property="Margin" Value="5"/>
-            <Setter Property="Padding" Value="10,2"/>
-        </Style>
-        <Style TargetType="ComboBox"><Setter Property="Margin" Value="5"/></Style>
-        <Style TargetType="TextBox"><Setter Property="Margin" Value="5"/></Style>
-    </Window.Resources>
-    <Grid Margin="5">
+    <Grid Margin="10">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>   <!-- Filter -->
-            <RowDefinition Height="*"/>      <!-- Liste: wächst als EINZIGE mit -->
-            <RowDefinition Height="Auto"/>   <!-- Bearbeiten -->
-            <RowDefinition Height="Auto"/>   <!-- Buttons -->
+            <RowDefinition Height="Auto"/>   <!-- 0 Filter -->
+            <RowDefinition Height="*"/>      <!-- 1 Liste: wächst als EINZIGE mit -->
+            <RowDefinition Height="Auto"/>   <!-- 2 Bearbeiten -->
+            <RowDefinition Height="Auto"/>   <!-- 3 Buttons -->
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Orientation="Horizontal">
-            <Label Content="Category:"/>
-            <ComboBox Width="150" ItemsSource="{Binding Categories}"
-                      SelectedItem="{Binding SelectedCategory}" DisplayMemberPath="Name"/>
-            <Button Content="Filter" Command="{Binding FilterCommand}"/>
-        </StackPanel>
-
-        <DataGrid Grid.Row="1" Margin="5" ItemsSource="{Binding Items}"
-                  SelectedItem="{Binding SelectedItem}" IsEnabled="{Binding IsNotEditing}"
-                  AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
-                  HeadersVisibility="Column" SelectionMode="Single">
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="Date"
-                                    Binding="{Binding CreationDate, StringFormat=d}"/>
-                <DataGridTextColumn Header="Name"     Binding="{Binding Name}" Width="*"/>
-                <DataGridTextColumn Header="Category" Binding="{Binding Category}"/>
-                <DataGridTextColumn Header="Count"    Binding="{Binding DetailCount}"/>
-                <DataGridTextColumn Header="Tags"     Binding="{Binding Tags}"/>
-                <DataGridTextColumn Header="Min"
-                                    Binding="{Binding MinValue, TargetNullValue='-'}"/>
-            </DataGrid.Columns>
-        </DataGrid>
-
-        <Grid Grid.Row="2">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition/><ColumnDefinition Width="200"/>
-            </Grid.ColumnDefinitions>
-            <Label Content="Category:"/>
-            <ComboBox Grid.Column="1" ItemsSource="{Binding EditCategories}"
-                      DisplayMemberPath="Name" SelectedItem="{Binding SelectedEditCategory}"
-                      IsEnabled="{Binding IsEditing}"/>
-        </Grid>
-
-        <UniformGrid Grid.Row="3" Rows="1">               <!-- gleich breite Buttons -->
-            <Button Content="Details" Command="{Binding DetailsCommand}"/>
-            <Button Content="Edit"    Command="{Binding EditCommand}"/>
-            <Button Content="Update"  Command="{Binding UpdateCommand}"/>
-            <Button Content="Import"  Command="{Binding ImportCommand}"/>
-        </UniformGrid>
+        <!-- Bausteine hier einfügen -->
     </Grid>
 </Window>
 ----
 
-* Alle Elemente stehen *im* `<Grid>`: ein `Window` hat genau ein Kind („Content is set more than once“ = zweites Kind).
-* Layout nachbauen: Zeilen zählen, nur die Zeile mit der Liste `+*+`, alle anderen `Auto`.
-* `DataGrid`: `AutoGenerateColumns="False"` (sonst doppelte Spalten), `IsReadOnly="True"` (Binding ist TwoWay,
-  Properties ohne Setter werfen sonst), `CanUserAddRows="False"` (keine leere Zeile am Ende).
-* `<RowDefinition/>` = `+*+`. `2*` = doppelter Anteil, Zahl = Pixel. `Grid.Row`/`Column` 0-basiert, `RowSpan`/`ColumnSpan` verbinden.
-* `TextBox` sperren: `IsReadOnly="{Binding IsNotEditing}"`. `ComboBox` hat kein `IsReadOnly` → `IsEnabled`.
-* `<` in Attributen als `&lt;` schreiben (`"&lt;All&gt;"`).
+* Alles steht *im* `<Grid>`: ein `Window` hat genau ein Kind („Content is set more than once“ = zweites Kind).
+* `Auto` = so hoch wie der Inhalt, `+*+` = Rest (wächst beim Vergrößern), `2*` = doppelter Anteil, Zahl = Pixel.
+* Dialog: `WindowStartupLocation="CenterOwner"`, feste Größe `ResizeMode="NoResize"`, `SizeToContent="Height"`.
 
-=== Formular / Dialog (Label + Eingabe bündig)
+=== Filterzeile (StackPanel nebeneinander)
 
 [source,xml]
 ----
-<Grid Margin="5">
-    <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
-    </Grid.ColumnDefinitions>
-    <Grid.RowDefinitions>
-        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-        <RowDefinition Height="*"/>    <!-- Zeichenfläche / Liste -->
-        <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
-
-    <Label   Grid.Row="0" Content="Name:"/>
-    <TextBox Grid.Row="0" Grid.Column="1"
-             Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
-    <Label   Grid.Row="1" Content="Filename:"/>
-    <TextBox Grid.Row="1" Grid.Column="1"
-             Text="{Binding FileName, UpdateSourceTrigger=PropertyChanged}"/>
-    <Label     Grid.Row="2" Content="Date:"/>
-    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Item.CreationDate, StringFormat=d}"/>
-
-    <Border Grid.Row="3" Grid.ColumnSpan="2" BorderBrush="Black" BorderThickness="1">
-        <controls:PreviewControl Segments="{Binding Segments}"/>   <!-- Custom Draw -->
-    </Border>
-
-    <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal">
-        <Button Content="OK"    Command="{Binding ImportCommand}" Width="100"/>
-        <Button Content="Close" Command="{Binding CloseCommand}"  Width="100" IsCancel="True"/>
-    </StackPanel>
-</Grid>
+<StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+    <Label Content="Category:" VerticalAlignment="Center"/>
+    <ComboBox Width="150" VerticalAlignment="Center"
+              ItemsSource="{Binding FilterCategories}"
+              SelectedItem="{Binding SelectedFilterCategory}"
+              DisplayMemberPath="Name"/>
+    <Button Content="Filter" Width="60" Margin="15,0,0,0" Padding="4"
+            Command="{Binding FilterCommand}"/>
+</StackPanel>
 ----
 
-* `UpdateSourceTrigger=PropertyChanged` bei *jeder* TextBox, von der ein `CanExecute` abhängt
-  (Standard `LostFocus` → Button bleibt beim Tippen grau).
-* Fenster an Inhalt anpassen: `SizeToContent="WidthAndHeight"`, `ResizeMode="NoResize"`. `IsDefault="True"` = Enter.
-
-=== DataGrid: weitere Spalten, Zeilen einfärben, Alternative ListView
+=== Liste Variante A: ListView mit Spalten (GridView)
 
 [source,xml]
 ----
-<DataGrid ... AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False">
+<ListView Grid.Row="1" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
+          SelectionMode="Single">
+    <ListView.View>
+        <GridView>
+            <GridViewColumn Header="CreationDate"
+                            DisplayMemberBinding="{Binding CreationDate, StringFormat=d}"/>
+            <GridViewColumn Header="Name"     DisplayMemberBinding="{Binding Name}"/>
+            <GridViewColumn Header="Category" DisplayMemberBinding="{Binding CategoryName}"/>
+            <GridViewColumn Header="Count"    DisplayMemberBinding="{Binding DetailCount}"/>
+            <GridViewColumn Header="Tags"     DisplayMemberBinding="{Binding Tags}"/>
+        </GridView>
+    </ListView.View>
+</ListView>
+----
+
+=== Liste Variante B: DataGrid
+
+[source,xml]
+----
+<DataGrid Grid.Row="1" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
+          AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+          HeadersVisibility="Column" SelectionMode="Single">
     <DataGrid.Columns>
-        <DataGridTextColumn Header="Time"  Width="60" Binding="{Binding Time}"/>  <!-- Pixel -->
-        <DataGridTextColumn Header="Text"  Width="*"  Binding="{Binding Text}"/>  <!-- Rest -->
-        <DataGridTextColumn Header="Price" Binding="{Binding Price, StringFormat=N2}">
-            <DataGridTextColumn.ElementStyle>                      <!-- rechtsbündig -->
-                <Style TargetType="TextBlock">
-                    <Setter Property="HorizontalAlignment" Value="Right"/>
-                </Style>
-            </DataGridTextColumn.ElementStyle>
-        </DataGridTextColumn>
-        <DataGridCheckBoxColumn Header="Active" Binding="{Binding IsActive}"/>
-        <DataGridTemplateColumn Header="">                         <!-- Button pro Zeile -->
-            <DataGridTemplateColumn.CellTemplate>
-                <DataTemplate>
-                    <Button Content="X" CommandParameter="{Binding}"
-                            Command="{Binding DataContext.DeleteCommand,
-                                      RelativeSource={RelativeSource AncestorType=Window}}"/>
-                </DataTemplate>
-            </DataGridTemplateColumn.CellTemplate>
-        </DataGridTemplateColumn>
+        <DataGridTextColumn Header="CreationDate" Binding="{Binding CreationDate, StringFormat=d}"/>
+        <DataGridTextColumn Header="Name"     Binding="{Binding Name}" Width="*"/>
+        <DataGridTextColumn Header="Category" Binding="{Binding CategoryName}"/>
+        <DataGridTextColumn Header="Count"    Binding="{Binding DetailCount}"/>
+        <DataGridTextColumn Header="Tags"     Binding="{Binding Tags}"/>
     </DataGrid.Columns>
-
-    <DataGrid.RowStyle>                                            <!-- ganze Zeile einfärben -->
-        <Style TargetType="DataGridRow">
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding CategoryId}" Value="{x:Null}">
-                    <Setter Property="Foreground" Value="Gray"/>
-                </DataTrigger>
-            </Style.Triggers>
-        </Style>
-    </DataGrid.RowStyle>
 </DataGrid>
 ----
 
-* Datei-Vorlage: `ItemsSource="{Binding Document.Entries}"`, Spalten an die Properties von `EntryRow` binden.
-* Scrollt nur in einer `+*+`-Zeile oder als letztes Kind eines `DockPanel`, *nie* in einem `StackPanel`.
-* Jede zweite Zeile färben: `AlternatingRowBackground="#FFF0F0F0"`. Gitterlinien aus: `GridLinesVisibility="None"`.
-* Alternative ohne Gitter: `<ListView ItemsSource=... SelectedItem=...><ListView.View><GridView>`
-  mit `<GridViewColumn Header="Name" DisplayMemberBinding="{Binding Name}"/>`.
+* `AutoGenerateColumns="False"` (sonst doppelte Spalten), `IsReadOnly="True"` (Binding ist TwoWay; Properties ohne Setter,
+  z. B. Records, werfen sonst), `CanUserAddRows="False"` (keine leere Zeile am Ende).
+* Spaltenbreite: Zahl, `Auto` oder `+*+` (Rest). Zeilen abwechselnd färben: `AlternatingRowBackground="#FFF0F0F0"`.
+* Weitere Spaltentypen: `<DataGridCheckBoxColumn Header="Active" Binding="{Binding Active}"/>`,
+  Button pro Zeile mit `DataGridTemplateColumn` (siehe ItemsControl unten, gleiches Binding auf das Fenster-ViewModel).
+* Ganze Zeile einfärben: `<DataGrid.RowStyle><Style TargetType="DataGridRow"><Style.Triggers>` +
+  `<DataTrigger Binding="{Binding CategoryId}" Value="{x:Null}"><Setter Property="Foreground" Value="Gray"/></DataTrigger>`
+  (bei ListView: `ListView.ItemContainerStyle` mit `TargetType="ListViewItem"`).
+* Liste scrollt nur in einer `+*+`-Zeile, *nie* in einem `StackPanel`.
+
+=== Bearbeiten-Zeile (Grid mit 2 Spalten)
+
+[source,xml]
+----
+<Grid Grid.Row="2" Margin="0,10">
+    <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="170"/>
+    </Grid.ColumnDefinitions>
+    <Label Grid.Column="0" Content="Category:" Margin="10,0"/>
+    <!-- ComboBox hat kein echtes ReadOnly → nur aktiv beim Bearbeiten -->
+    <ComboBox Grid.Column="1" VerticalAlignment="Center"
+              ItemsSource="{Binding EditCategories}"
+              SelectedItem="{Binding SelectedEditCategory}"
+              DisplayMemberPath="Name"
+              IsEnabled="{Binding IsEditing}"/>
+</Grid>
+----
+
+* TextBox stattdessen: `IsReadOnly="{Binding IsNotEditing}"` (zweite Property `public bool IsNotEditing => !IsEditing;`,
+  im Setter von `IsEditing` mit `OnPropertyChanged(nameof(IsNotEditing))` mitmelden).
+
+=== Button-Leiste (UniformGrid: gleich breite Buttons)
+
+[source,xml]
+----
+<UniformGrid Grid.Row="3" Rows="1">
+    <UniformGrid.Resources>
+        <Style TargetType="Button">                       <!-- gilt für alle Buttons darin -->
+            <Setter Property="Margin" Value="0,0,15,0"/>
+            <Setter Property="Padding" Value="3"/>
+        </Style>
+    </UniformGrid.Resources>
+    <Button Content="Details" Command="{Binding DetailsCommand}"/>
+    <Button Content="Edit"    Command="{Binding EditCommand}"/>
+    <Button Content="Update"  Command="{Binding UpdateCommand}"/>
+    <Button Content="Import"  Command="{Binding ImportCommand}" Margin="0"/>
+</UniformGrid>
+----
+
+=== Eingabe-Dialog (Label + TextBox, Fehler als ToolTip)
+
+[source,xml]
+----
+<Window ... Title="Import" SizeToContent="Height" Width="560"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+    <Grid Margin="10">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="270"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.Resources>
+            <Style TargetType="TextBox">
+                <Setter Property="Margin" Value="0,2"/>
+                <Style.Triggers>                          <!-- Validierungsfehler als ToolTip -->
+                    <Trigger Property="Validation.HasError" Value="True">
+                        <Setter Property="ToolTip"
+                                Value="{Binding RelativeSource={RelativeSource Self},
+                                        Path=(Validation.Errors)[0].ErrorContent}"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+        </Grid.Resources>
+
+        <Label   Grid.Row="0" Content="Name:"/>
+        <TextBox Grid.Row="0" Grid.Column="1"
+                 Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+        <!-- Zeilen 1..3 genauso: Description, Category, FileName -->
+
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,15,0,0">
+            <Button Content="Import" Width="120" IsDefault="True"
+                    Command="{Binding ImportCommand}"/>
+            <Button Content="Close"  Width="120" Margin="15,0,0,0"
+                    Command="{Binding CloseCommand}" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>
+----
+
+* `UpdateSourceTrigger=PropertyChanged` bei *jeder* TextBox, sonst wird erst beim Verlassen validiert (Button bleibt grau).
+* `IsDefault="True"` = Enter, `IsCancel="True"` = Esc. Roter Rahmen bei Fehlern kommt automatisch.
+
+=== Detail-Dialog (Infos oben, Zeichenfläche wächst mit)
+
+[source,xml]
+----
+<Window ... xmlns:controls="clr-namespace:Wpf.Controls" Title="Preview" Height="350" Width="400"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>      <!-- Infos -->
+            <RowDefinition Height="*"/>         <!-- Zeichnung -->
+            <RowDefinition Height="Auto"/>      <!-- Close -->
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <Label     Grid.Row="0" Content="Name:"/>
+            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Name}"
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+            <Label     Grid.Row="1" Content="CreationDate:"/>
+            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding CreationDate, StringFormat=d}"
+                       VerticalAlignment="Center"/>
+        </Grid>
+
+        <controls:PreviewControl Grid.Row="1" Steps="{Binding Steps}"/>   <!-- Custom Draw -->
+
+        <Button Grid.Row="2" Content="Close" Width="100" Margin="0,8,0,0" HorizontalAlignment="Left"
+                Command="{Binding CloseCommand}" IsCancel="True"/>
+    </Grid>
+</Window>
+----
 
 === Binding-Spickzettel
 
@@ -1493,95 +1907,158 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 [[draw]]
 == Custom Draw (OnRender)
 
-=== UserControl mit DependencyProperty: Linien skaliert zeichnen
+Zwei Teile: *Teil A* (Control, Skalierung, Zeichnen) unverändert kopieren, nur Typ/Name der Daten anpassen.
+*Teil B* (`BuildSegments`: Daten der Angabe → Linien) pro Aufgabe neu schreiben.
+
+=== Teil A: UserControl mit bindbarer Property + Skalierung (kopieren)
 
 [source,csharp]
 ----
-public record Segment(Point From, Point To, Brush? Brush);   // Brush null = nicht zeichnen
-
 // Wpf/Controls/PreviewControl.xaml(.cs): Hinzufügen → Benutzersteuerelement (UserControl)
+using Step = Core.Domain.Step;                         // Datentyp, den das ViewModel liefert
+
 public partial class PreviewControl : UserControl
 {
-    public static readonly DependencyProperty SegmentsProperty = DependencyProperty.Register(
-        nameof(Segments), typeof(IList<Segment>), typeof(PreviewControl),
-        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    public PreviewControl() => InitializeComponent();
 
-    public IList<Segment>? Segments                      // bindbar
+    // bindbare Property: <controls:PreviewControl Steps="{Binding Steps}"/>
+    public static readonly DependencyProperty StepsProperty = DependencyProperty.Register(
+        nameof(Steps), typeof(IList<Step>), typeof(PreviewControl),
+        new FrameworkPropertyMetadata(new List<Step>(),
+            FrameworkPropertyMetadataOptions.AffectsRender, OnStepsChanged));
+
+    public IList<Step> Steps
     {
-        get => (IList<Segment>?)GetValue(SegmentsProperty);
-        set => SetValue(SegmentsProperty, value);
+        get => (IList<Step>)GetValue(StepsProperty);
+        set => SetValue(StepsProperty, value);
     }
 
-    public PreviewControl() => InitializeComponent();
+    private static void OnStepsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        => ((PreviewControl)d).InvalidateVisual();     // neue Daten → neu zeichnen
+
+    // Farbindex → Stift (Freeze = unveränderlich, schneller)
+    private static readonly Pen[] Pens = CreatePens(
+        Colors.Red, Colors.Orange, Colors.Yellow, Colors.Green, Colors.Blue, Colors.DarkBlue,
+        Colors.Violet, Colors.DarkViolet, Colors.Black, Colors.White, Colors.Gray, Colors.Magenta);
+
+    private static Pen[] CreatePens(params Color[] colors)
+        => colors.Select(c =>
+        {
+            var pen = new Pen(new SolidColorBrush(c), 1.0);
+            pen.Freeze();
+            return pen;
+        }).ToArray();
+
+    private const double DrawMargin = 10;              // Abstand zum Rand
+    private double _scale, _offsetX, _offsetY;
 
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
-        dc.DrawRectangle(Brushes.White, null, new Rect(0, 0, ActualWidth, ActualHeight));
-        if (Segments == null || Segments.Count == 0) return;
+        dc.DrawRectangle(Brushes.White, new Pen(Brushes.Black, 1),
+                         new Rect(0, 0, ActualWidth, ActualHeight));   // Hintergrund + Rahmen
 
-        // 1. Bounding Box der Rohkoordinaten
-        var pts = Segments.SelectMany(s => new[] { s.From, s.To }).ToList();
-        double minX = pts.Min(p => p.X), maxX = pts.Max(p => p.X);
-        double minY = pts.Min(p => p.Y), maxY = pts.Max(p => p.Y);
+        var segments = BuildSegments(Steps);           // Teil B
+        if (segments.Count == 0 || ActualWidth <= 2 * DrawMargin || ActualHeight <= 2 * DrawMargin)
+        {
+            return;
+        }
 
-        // 2. Faktor: Math.Min → Seitenverhältnis bleibt, Max(...,1) → keine Division durch 0
-        const double m = 10;                             // Rand
-        double scale = Math.Min((ActualWidth  - 2 * m) / Math.Max(maxX - minX, 1),
-                                (ActualHeight - 2 * m) / Math.Max(maxY - minY, 1));
-        Point ToScreen(Point p) => new((p.X - minX) * scale + m, (p.Y - minY) * scale + m);
+        // 1. Bounding Box über alles, was GEZEICHNET wird
+        double minX  = segments.Min(s => Math.Min(s.X1, s.X2));
+        double maxX  = segments.Max(s => Math.Max(s.X1, s.X2));
+        double minY  = segments.Min(s => Math.Min(s.Y1, s.Y2));
+        double maxY  = segments.Max(s => Math.Max(s.Y1, s.Y2));
+        double sizeX = Math.Max(maxX - minX, 1);       // keine Division durch 0
+        double sizeY = Math.Max(maxY - minY, 1);
+
+        // 2. EIN Faktor für x und y (nicht verzerrt), in der freien Fläche zentriert
+        double width  = ActualWidth  - 2 * DrawMargin;
+        double height = ActualHeight - 2 * DrawMargin;
+        _scale   = Math.Min(width / sizeX, height / sizeY);
+        _offsetX = DrawMargin + (width  - sizeX * _scale) / 2 - minX * _scale;
+        _offsetY = DrawMargin + (height - sizeY * _scale) / 2 - minY * _scale;
 
         // 3. zeichnen
-        foreach (var s in Segments.Where(s => s.Brush != null))
-            dc.DrawLine(new Pen(s.Brush, 1), ToScreen(s.From), ToScreen(s.To));
+        foreach (var s in segments)
+        {
+            dc.DrawLine(Pens[s.Color % Pens.Length], ToPoint(s.X1, s.Y1), ToPoint(s.X2, s.Y2));
+        }
     }
+
+    private Point ToPoint(double x, double y) => new(x * _scale + _offsetX, y * _scale + _offsetY);
+
+    private record struct Segment(double X1, double Y1, double X2, double Y2, int Color);
+
+    // private static List<Segment> BuildSegments(...)  → Teil B
 }
 ----
 
 [source,xml]
 ----
 <Window ... xmlns:controls="clr-namespace:Wpf.Controls">
-<Border Grid.Row="3" BorderBrush="Black" BorderThickness="1">
-    <controls:PreviewControl Segments="{Binding Segments}"/>
-</Border>
+    <controls:PreviewControl Grid.Row="1" Steps="{Binding Steps}"/>   <!-- in eine *-Zeile -->
 ----
 
-* Normale C#-Properties sind *nicht* bindbar → `DependencyProperty` (Muster oben). `AffectsRender`: neuer Wert → `OnRender`,
-  bei Fenster-Größenänderung wird ebenfalls neu gezeichnet. Typ der Property = was das ViewModel liefert.
+* Eine normale C#-Property ist *nicht* bindbar → `DependencyProperty` (Muster oben). `AffectsRender` + `InvalidateVisual`:
+  neue Daten oder neue Fenstergröße → `OnRender` läuft neu.
+* Im ViewModel die Liste immer *neu zuweisen* (`Steps = ...ToList()`), sonst merkt das Control nichts.
 * Zeichnen: `DrawLine(pen, p1, p2)`, `DrawRectangle(brush, pen, rect)`, `DrawEllipse(brush, pen, center, rx, ry)`.
-  `Pen` = Linie (Farbe + Dicke), `Brush` = Füllung. Y wächst nach *unten*.
-* Im ViewModel die `Segments` als `List<Segment>` berechnen und *neu zuweisen* (nicht nur ändern), damit neu gezeichnet wird.
+  `Pen` = Linie (Farbe + Dicke), `Brush` = Füllung. Bildschirm: y wächst nach *unten*.
 
-=== Daten in Linien umrechnen (Richtung, Winkel, Farbe)
+=== Teil B: Daten der Angabe → Linien (anpassen)
 
 [source,csharp]
 ----
-// Richtung als Index: Reihenfolge wie in der Angabe, z. B.   0 1 2 / 7 · 3 / 6 5 4
-private static readonly (int Dx, int Dy)[] Steps =
-    { (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0) };  // "oben" = Dy -1
+// Richtung als Index → Schritt in x/y. Reihenfolge wie in der Angabe!
+//   0 1 2
+//   7 . 3        y wächst nach UNTEN → "oben" = Dy -1
+//   6 5 4
+private static readonly (int Dx, int Dy)[] Deltas =
+    [(-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0)];
 
-private static readonly Brush[] Palette =                // Farbe aus Index
+// Position wandert mit; Stift oben (Color null) bewegt nur, zeichnet nicht
+private static List<Segment> BuildSegments(IList<Step>? steps)
 {
-    Brushes.Black, Brushes.Red, Brushes.Orange, Brushes.Green,
-    Brushes.Blue, Brushes.Purple, Brushes.Brown, Brushes.DeepPink,
-};
-
-var segments = new List<Segment>();
-var pos = new Point(0, 0);
-foreach (var d in details.OrderBy(d => d.SeqNo))
-{
-    var (dx, dy) = Steps[d.Code];
-    var next = new Point(pos.X + dx * d.Count, pos.Y + dy * d.Count);
-    Brush? brush = d.Option is int c ? Palette[c % Palette.Length] : null;   // null = unsichtbar
-    segments.Add(new Segment(pos, next, brush));
-    pos = next;                                          // auch ohne Zeichnen weiterbewegen
+    var segments = new List<Segment>();
+    double x = 0, y = 0;
+    foreach (var step in steps ?? [])
+    {
+        var (dx, dy) = Deltas[step.Kind];
+        double newX = x + dx * step.Repeat;
+        double newY = y + dy * step.Repeat;
+        if (step.Color is int color)
+        {
+            segments.Add(new Segment(x, y, newX, newY, Math.Abs(color)));
+        }
+        x = newX;
+        y = newY;
+    }
+    return segments;
 }
-Segments = segments;
-
-// Winkel statt Index (Grad → Bogenmaß, minus weil Y nach unten wächst)
-double rad = deg * Math.PI / 180;
-var end = new Point(x + len * Math.Cos(rad), y - len * Math.Sin(rad));
 ----
+
+[source,csharp]
+----
+// Variante Winkel + Länge (Grad → Bogenmaß; minus, weil y nach unten wächst)
+double rad  = step.Angle * Math.PI / 180;
+double newX = x + step.Length * Math.Cos(rad);
+double newY = y - step.Length * Math.Sin(rad);
+
+// Variante Punkte aus der Datei: Linie von Punkt i-1 zu Punkt i
+for (int i = 1; i < points.Count; i++)
+{
+    segments.Add(new Segment(points[i - 1].X, points[i - 1].Y, points[i].X, points[i].Y, 0));
+}
+
+// y soll nach OBEN wachsen (Mathe-Koordinaten): beim Erzeugen y negieren → new Segment(x, -y, ...)
+// Punkt/Kreis statt Linie (in OnRender): dc.DrawEllipse(Brushes.Red, null, ToPoint(x, y), 3, 3);
+// Text: dc.DrawText(new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+//                   new Typeface("Segoe UI"), 12, Brushes.Black, 1.0), ToPoint(x, y));
+----
+
+* Gibt die Vorlage schon ein `enum` + Delta-Tabelle (z. B. `direction.Delta()` als Extension in Core), diese verwenden.
+* Farbe aus Index: `Pens[color % Pens.Length]`; ohne Farbe in der Angabe einfach `0` übergeben.
 
 === Variante: Liniendiagramm (x und y getrennt skaliert)
 
@@ -1703,5 +2180,10 @@ public class MainViewModelTests
 * *Designer: „existiert nicht im Namespace“* → Projekt bauen (Strg+Umschalt+B), C#-Fehler beheben, Groß-/Kleinschreibung im `xmlns` prüfen.
 * *`XamlParseException` in `InitializeComponent`* → Inner Exception lesen: `Command="Binding X"` ohne `{}`,
   ungültiger Wert (`Margin="5;0"`), Bild nicht als *Resource* im Projekt, Ressource nach ihrer Verwendung definiert.
+* *`RelayCommand` erwartet keinen Parameter* (`p => ...` kompiliert nicht) → `RelayCommandParam` verwenden.
+* *CS9035 „required member must be set“* → im `new Xxx { ... }` alle `required`-Properties setzen.
+* *„appsettings.json was not found“* → aus dem Projektordner starten (F5 oder `dotnet run` im Projektordner).
+* *Migrate schlägt nach EnsureCreated fehl* → im Import nur eines von beiden aufrufen.
+* *Zwei Klassen gleichen Namens* (Entity + Domain-Record) → Alias: `using Step = Core.Domain.Step;`.
 * *Test kompiliert nicht* → Name/Sichtbarkeit weicht vom Test ab. Namen aus dem Test übernehmen, `public` machen.
 * *„changes … from a thread different from the Dispatcher thread“* → Collection in `Task.Run` geändert. Erst nach `await` zuweisen.

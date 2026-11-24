@@ -1,15 +1,15 @@
 # WPF Cheat Sheet
 
-Kompaktes WPF/MVVM-Cheatsheet für die Prüfung (max. 30 Seiten). Die Kapitel folgen dem Arbeitsablauf:
+Kompaktes WPF/MVVM-Cheatsheet für die Prüfung, ausgerichtet an der Musterlösung der Turtle-Aufgabe (aber neutral formuliert). Die Kapitel folgen dem Arbeitsablauf:
 
 1. Ablauf-Checkliste + Platzhalter-Namen (`Item`/`Category`/`Detail`/`Tag`) zum Suchen/Ersetzen
 2. Projekt und Vorlage (Datei-Vorlage, DB-Vorlage, ohne Vorlage)
 3. Logik und Helper (Parser, Regex, Try-Muster, Dateien, CSV)
-4. Datenbank und Import (Repository-Abfrage, ImportService, Konsolen-Import)
-5. Model und ViewModel (Filter, Edit/Update, Laden/Speichern, Dialoge, Async)
+4. Datenbank und Import (Entities, Mapping-Klassen, Migrationen, Repository-Abfrage, Parser → ImportService → Program.cs)
+5. Model und ViewModel (Haupt-ViewModel, Dialog-ViewModels mit Validierung, Design-Daten, Datei-Vorlage, Async)
 6. Fenster, DI und Dialoge (App-Start, WindowNavigator)
-7. XAML (Hauptfenster, Formular, DataGrid, Binding, Styles)
-8. Custom Draw (OnRender mit Skalierung)
+7. XAML (Bausteine: Grid, StackPanel, ListView/DataGrid, UniformGrid, Dialoge, Binding, Styles)
+8. Custom Draw (Control mit Skalierung zum Kopieren + anpassbarer Teil Daten → Linien)
 9. Unit-Tests und häufige Fehler
 
 - [`WPF-Cheatsheet-de.adoc`](WPF-Cheatsheet-de.adoc) – AsciiDoc-Quelle
