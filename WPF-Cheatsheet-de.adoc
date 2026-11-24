@@ -228,6 +228,7 @@ DateOnly date = parts.Length > 1
 
 === Entities (Core/Entities, meist gegeben)
 
+.Haupt-Entity + Nachschlage-Entity (Core/Entities)
 [source,csharp]
 ----
 public class Item : EntityObject                       // Vorlage: EntityObject = Id + RowVersion
@@ -249,7 +250,11 @@ public class Category : EntityObject                   // Nachschlage-Tabelle
     public required string Name  { get; set; }
     public IList<Item>?    Items { get; set; }
 }
+----
 
+.1:n-Kind
+[source,csharp]
+----
 public class Detail : EntityObject                     // 1:n-Kind, Reihenfolge über SeqNo
 {
     public int  SeqNo  { get; set; }
@@ -260,7 +265,11 @@ public class Detail : EntityObject                     // 1:n-Kind, Reihenfolge 
     public int   ItemId { get; set; }                  // Pflicht-Fremdschlüssel
     public Item? Item   { get; set; }
 }
+----
 
+.m:n (Tag) + m:n mit Zusatzdaten (Rating)
+[source,csharp]
+----
 public class Tag : EntityObject                        // m:n ohne Zusatzdaten
 {
     public required string Description { get; set; }
@@ -286,6 +295,7 @@ public class Rating : EntityObject                     // m:n MIT Zusatzdaten = 
 
 === Mapping pro Entity + DbContext (Persistence, meist gegeben)
 
+.ItemMapping (Persistence/Mapping)
 [source,csharp]
 ----
 // Persistence/Mapping/ItemMapping.cs  (eine Datei pro Entity)
@@ -305,7 +315,11 @@ public static class ItemMapping
         entity.HasMany(i => i.Tags).WithMany(t => t.Items);   // m:n → Join-Tabelle automatisch
     }
 }
+----
 
+.CategoryMapping + DetailMapping
+[source,csharp]
+----
 public static class CategoryMapping
 {
     public static void Map(this EntityTypeBuilder<Category> entity)
@@ -331,6 +345,7 @@ public static class DetailMapping
 // RatingMapping: ToTable + HasKey + entity.HasOne(r => r.Item); entity.HasOne(r => r.Tag);
 ----
 
+.DbContext (Persistence)
 [source,csharp]
 ----
 // Persistence/ApplicationDbContext.cs
@@ -381,6 +396,7 @@ Drop-Database                        # DB löschen
 
 === Repository-Abfrage für die Übersicht (DTO-Record, Filter in der DB)
 
+.DTO-Record (Core/DataTransferObjects)
 [source,csharp]
 ----
 // Core/DataTransferObjects/ItemOverviewDto.cs: genau die Spalten EINER Zeile der Liste
@@ -396,13 +412,21 @@ public record ItemOverviewDto(
 {
     public string Tags => string.Join(",", TagNames);     // "A,B" für eine Spalte
 }
+----
 
+.Interface (Core/Contracts)
+[source,csharp]
+----
 // Core/Contracts/IItemRepository.cs
 public interface IItemRepository : IGenericRepository<Item>
 {
     Task<IList<ItemOverviewDto>> GetOverviewAsync(int? categoryId);   // null = alle
 }
+----
 
+.Repository mit Abfrage (Persistence)
+[source,csharp]
+----
 // Persistence/ItemRepository.cs
 public class ItemRepository : GenericRepository<Item>, IItemRepository
 {
@@ -433,6 +457,7 @@ public class ItemRepository : GenericRepository<Item>, IItemRepository
 }
 ----
 
+.Auswertung: Anzahl pro Wert
 [source,csharp]
 ----
 // Auswertung: Anzahl pro Wert (z. B. Bewertungen 1..5 je Item eines Tags) - alles in SQL
@@ -479,11 +504,16 @@ public async Task<IList<RatingCountDto>> GetRatingCountsAsync(int tagId)
 [[import]]
 === Import Schritt 1: Parser (Core, reine Logik)
 
+.Domain-Record
 [source,csharp]
 ----
 // Core/Domain/Step.cs - reines Datenobjekt, KEINE Entity (Vorlage bringt so etwas oft mit)
 public record Step(int Kind, int Repeat, int? Color);
+----
 
+.Parser
+[source,csharp]
+----
 // Core/Domain/ItemParser.cs
 public static class ItemParser
 {
@@ -529,6 +559,7 @@ public static class ItemParser
 
 === Import Schritt 2: ImportService (EIN Datensatz, eine Transaktion)
 
+.Interface
 [source,csharp]
 ----
 // Core/Contracts/IImportService.cs
@@ -537,7 +568,11 @@ public interface IImportService
     Task ImportItemAsync(string name, string? description, string? category,
                          DateOnly creationDate, string fileName);
 }
+----
 
+.ImportService
+[source,csharp]
+----
 // Persistence/ImportService.cs
 using ItemParser = Core.Domain.ItemParser;   // Alias: Domain-Typ heißt evtl. gleich wie Entity
 
@@ -563,7 +598,11 @@ public class ImportService : IImportService
                              .SingleOrDefault()
                              ?? new Category { Code = category, Name = category };
         }
+----
 
+.ImportService: Item mit Kindern aufbauen + speichern
+[source,csharp]
+----
         // 4. Item + Kinder über Navigation-Properties aufbauen (keine Ids setzen)
         var item = new Item
         {
@@ -593,6 +632,7 @@ public class ImportService : IImportService
 
 === Import Schritt 3: Program.cs im Import-Projekt
 
+.Start + DI
 [source,csharp]
 ----
 // ImportConsoleApp/Program.cs  (using System.Globalization; ergänzen)
@@ -617,7 +657,11 @@ void ConfigureDependencyInjector()
         .AddTransient<IImportService, ImportService>();
     AppService.BuildServiceProvider();
 }
+----
 
+.Datenbank neu anlegen
+[source,csharp]
+----
 async Task RecreateDatabaseAsync()
 {
     using var scope = AppService.ServiceProvider!.CreateScope();
@@ -627,7 +671,11 @@ async Task RecreateDatabaseAsync()
     Console.WriteLine("Creating database ...");
     await uow.CreateDatabaseAsync();       // ODER await uow.MigrateDatabaseAsync(); - nie beides
 }
+----
 
+.Import-Schleife über die Ordner
+[source,csharp]
+----
 async Task ImportAsync()
 {
     int countTotal    = 0;
@@ -659,7 +707,11 @@ async Task ImportAsync()
     }
     Console.WriteLine($"Import done: {countTotal} files");
 }
+----
 
+.Datum aus dem Dateinamen
+[source,csharp]
+----
 // "Sample_20250225" → 2025-02-25, kein gültiges Datum am Ende → heute
 DateOnly GetDateFromName(string name)
 {
@@ -946,7 +998,11 @@ public class ImportViewModel : ValidatableBaseViewModel, IValidatableObject
         get => _category;
         set => SetProperty(ref _category, value);
     }
+----
 
+.region Properties: Datei + IsBusy
+[source,csharp]
+----
     private string _fileName = string.Empty;
     [Required(ErrorMessage = "Filename is required")]
     public string FileName
@@ -1114,6 +1170,7 @@ public class DetailViewModel : ValidatableBaseViewModel
 [[datei]]
 === Datei-Vorlage (ohne DB): DTO, UI-Model, Laden, Speichern
 
+.UI-Model + Tabellenzeile (WPFApp/Models)
 [source,csharp]
 ----
 public class Document : NotifyPropertyChanged            // WPFApp/Models: das, was das UI bindet
@@ -1134,7 +1191,11 @@ public class EntryRow                                    // eine Zeile der Tabel
     public string Time { get; set; } = "";
     public string Text { get; set; } = "";
 }
+----
 
+.ViewModel: Felder + Konstruktor
+[source,csharp]
+----
 public class MainViewModel : NotifyPropertyChanged
 {
     private readonly DataManager _manager = new();       // Lehrer-Klasse: Datei <-> DTO
@@ -1151,7 +1212,11 @@ public class MainViewModel : NotifyPropertyChanged
         LoadCommand = new RelayCommand(Load, CanLoad);
         SaveCommand = new RelayCommand(Save, CanSave);
     }
+----
 
+.Laden + Speichern
+[source,csharp]
+----
     public bool CanLoad() => !string.IsNullOrWhiteSpace(FileName) && File.Exists(FileName);
 
     public void Load()
@@ -1190,6 +1255,7 @@ public class MainViewModel : NotifyPropertyChanged
 
 === Async: UI bleibt bedienbar (Dateien durchsuchen)
 
+.IsBusy, Command, async Methode
 [source,csharp]
 ----
 // Folder, Mask, SearchText, Result: normale Properties mit SetProperty
@@ -1230,6 +1296,7 @@ public async Task SearchAsync()
 
 === Viele gleiche Buttons, ein Command (Raster, Tastenfeld)
 
+.Raster: ein Command für alle Felder
 [source,csharp]
 ----
 // Raster: Index-Binding auf ObservableCollection (ein Array aktualisiert NICHT)
@@ -1241,7 +1308,11 @@ CellCommand = new RelayCommandParam(p => OnCell(int.Parse((string)p!)),  // "0".
 private static readonly int[][] Lines =                  // Reihen/Spalten/Diagonalen 3x3
     [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
 private bool AllSame(string v) => Lines.Any(l => l.All(i => Cells[i] == v));
+----
 
+.Tastenfeld: Operation als Lambda
+[source,csharp]
+----
 // Tastenfeld: Operation als Lambda merken, bei "=" ausführen
 private Func<double, double, double>? _op;
 InputCommand = new RelayCommandParam(p =>
@@ -1304,6 +1375,7 @@ private void Input_Click(object sender, RoutedEventArgs e)
 <Application x:Class="Wpf.App" ... Startup="Application_Startup">   <!-- statt StartupUri -->
 ----
 
+.App.xaml.cs
 [source,csharp]
 ----
 private void Application_Startup(object sender, StartupEventArgs e)
@@ -1352,6 +1424,7 @@ public partial class MainWindow : Window
 
 === WindowNavigator: was man zur leeren Vorlage ergänzt
 
+.Interface (Wpf.ViewModels)
 [source,csharp]
 ----
 // Wpf.ViewModels/IWindowNavigator.cs (Vorlage: leer)
@@ -1361,7 +1434,11 @@ public interface IWindowNavigator : IBaseWindowNavigator  // erbt CloseWindow(),
     bool ShowImportDialog();                   // true = OK → Aufrufer lädt neu
     void CloseWindow(bool dialogResult);       // Dialog mit Ergebnis schließen
 }
+----
 
+.Umsetzung (Wpf)
+[source,csharp]
+----
 // Wpf/WindowNavigator.cs
 public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 {
@@ -1517,6 +1594,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
 === Eingabe-Dialog (Label + TextBox, Fehler als ToolTip)
 
+.Fenster, Grid, TextBox-Style
 [source,xml]
 ----
 <Window ... Title="Import" SizeToContent="Height" Width="560"
@@ -1543,7 +1621,11 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
                 </Style.Triggers>
             </Style>
         </Grid.Resources>
+----
 
+.Felder + Buttons
+[source,xml]
+----
         <Label   Grid.Row="0" Content="Name:"/>
         <TextBox Grid.Row="0" Grid.Column="1"
                  Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
@@ -1599,6 +1681,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
 === ItemsControl mit DataTemplate
 
+.Liste mit DataTemplate + Button pro Element
 [source,xml]
 ----
 <!-- Liste ohne Spalten: jedes Element sieht aus wie im DataTemplate -->
@@ -1622,6 +1705,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 </ScrollViewer>
 ----
 
+.ItemsPanel: Raster statt untereinander
 [source,xml]
 ----
 <!-- Anordnung ändern: Raster statt untereinander (oder WrapPanel, StackPanel Horizontal) -->
@@ -1637,7 +1721,11 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
         </DataTemplate>
     </ItemsControl.ItemTemplate>
 </ItemsControl>
+----
 
+.Trigger im DataTemplate
+[source,xml]
+----
 <!-- Aussehen abhängig vom Element: Trigger im DataTemplate -->
 <DataTemplate>
     <TextBlock x:Name="txt" Text="{Binding Name}"/>
@@ -1647,7 +1735,11 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
         </DataTrigger>
     </DataTemplate.Triggers>
 </DataTemplate>
+----
 
+.Implizites Template (DataType)
+[source,xml]
+----
 <!-- Template einmal als Ressource, gilt für jedes Element dieses Typs (kein ItemTemplate nötig) -->
 <Window.Resources>
     <DataTemplate DataType="{x:Type dto:ItemOverviewDto}">  <!-- xmlns:dto="clr-namespace:..." -->
@@ -1659,6 +1751,61 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 * `{Binding}` ohne Pfad = das ganze Element. Mit Auswahl: `ListBox` statt `ItemsControl` (+ `SelectedItem`),
   gleiches `ItemTemplate`. `ItemTemplate` und `DisplayMemberPath` nicht gleichzeitig.
 * Element per Command bekommen: `new RelayCommandParam(p => Show((ItemOverviewDto)p!))`.
+
+=== DataTemplate ohne ItemsControl
+
+Ein `DataTemplate` beschreibt das Aussehen *eines* Objekts. Es funktioniert überall, wo ein Objekt angezeigt wird,
+nicht nur in Listen.
+
+.Einzelnes Objekt anzeigen (ContentControl, z. B. Detailbereich der Auswahl)
+[source,xml]
+----
+<ContentControl Content="{Binding SelectedItem}">          <!-- null → bleibt leer -->
+    <ContentControl.ContentTemplate>
+        <DataTemplate>
+            <StackPanel>
+                <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
+                <TextBlock Text="{Binding Description}" TextWrapping="Wrap"/>
+            </StackPanel>
+        </DataTemplate>
+    </ContentControl.ContentTemplate>
+</ContentControl>
+----
+
+.Template mit Key einmal definieren, mehrfach verwenden
+[source,xml]
+----
+<Window.Resources>
+    <DataTemplate x:Key="ItemTemplate">
+        <StackPanel Orientation="Horizontal">
+            <Rectangle Width="12" Height="12" Margin="0,0,5,0"
+                       Fill="{Binding ColorHex, Converter={StaticResource HexToBrush}}"/>
+            <TextBlock Text="{Binding Name}"/>
+        </StackPanel>
+    </DataTemplate>
+</Window.Resources>
+
+<ComboBox ItemsSource="{Binding Items}" ItemTemplate="{StaticResource ItemTemplate}"/>
+<ListBox  ItemsSource="{Binding Items}" ItemTemplate="{StaticResource ItemTemplate}"/>
+<ContentControl Content="{Binding SelectedItem}" ContentTemplate="{StaticResource ItemTemplate}"/>
+<Button Content="{Binding SelectedItem}" ContentTemplate="{StaticResource ItemTemplate}"/>
+----
+
+.Eigene Zelle im DataGrid (CellTemplate)
+[source,xml]
+----
+<DataGridTemplateColumn Header="Color">
+    <DataGridTemplateColumn.CellTemplate>
+        <DataTemplate>
+            <Rectangle Width="16" Height="16"
+                       Fill="{Binding ColorHex, Converter={StaticResource HexToBrush}}"/>
+        </DataTemplate>
+    </DataGridTemplateColumn.CellTemplate>
+</DataGridTemplateColumn>
+----
+
+* Im Template ist der DataContext immer das angezeigte *Objekt*, nicht das ViewModel. `x:Key` = nur wo angegeben,
+  `DataType` ohne Key = automatisch für jedes Objekt dieses Typs.
 
 === Binding-Spickzettel
 
@@ -1677,6 +1824,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
 === Styles und Trigger
 
+.Impliziter Style
 [source,xml]
 ----
 <Window.Resources>
@@ -1684,7 +1832,11 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
         <Setter Property="Margin" Value="2"/>
     </Style>
 </Window.Resources>
+----
 
+.DataTrigger
+[source,xml]
+----
 <!-- Aussehen abhängig von Daten: Standardwert im Style, NICHT als Attribut am Element -->
 <TextBlock Text="{Binding Status}">
     <TextBlock.Style>
@@ -1698,7 +1850,11 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
         </Style>
     </TextBlock.Style>
 </TextBlock>
+----
 
+.Ganze Zeile einfärben
+[source,xml]
+----
 <!-- ganze Zeile einer Liste einfärben -->
 <DataGrid.RowStyle>                        <!-- ListView: ListView.ItemContainerStyle -->
     <Style TargetType="DataGridRow">       <!--           TargetType="ListViewItem" -->
@@ -1710,6 +1866,69 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
     </Style>
 </DataGrid.RowStyle>
 ----
+
+=== Farben: Converter Hex/Color → Brush
+
+.Converter-Klasse (Wpf/Converters/HexToBrushConverter.cs)
+[source,csharp]
+----
+using System.Globalization;
+using System.Windows.Data;
+using System.Windows.Media;                       // WPF-Farben, NICHT System.Drawing
+
+public class HexToBrushConverter : IValueConverter
+{
+    // "#FF8000", "#80FF0000" (mit Alpha) oder "Red" → Brush; sonst grau
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is string hex
+            ? new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex))
+            : Brushes.Gray;
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();      // nur nötig bei TwoWay
+}
+
+// ViewModel liefert schon eine Color → Brush
+public class ColorToBrushConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is Color c ? new SolidColorBrush(c) : Brushes.Transparent;
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is SolidColorBrush b ? b.Color : Colors.Transparent;
+}
+----
+
+.Converter im XAML anmelden und verwenden
+[source,xml]
+----
+<Window ... xmlns:conv="clr-namespace:Wpf.Converters">
+    <Window.Resources>
+        <conv:HexToBrushConverter x:Key="HexToBrush"/>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>          <!-- in WPF eingebaut -->
+    </Window.Resources>
+
+    <Border Background="{Binding ColorHex, Converter={StaticResource HexToBrush}}"/>
+    <TextBlock Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"/>
+----
+
+.Umrechnen im Code (Color, Brush, Text)
+[source,csharp]
+----
+Color c1 = (Color)ColorConverter.ConvertFromString("#FF8000");     // Text → Color ("Red" geht)
+Color c2 = Color.FromRgb(255, 128, 0);                              // RGB
+Color c3 = Color.FromArgb(128, 255, 0, 0);                          // mit Alpha (halb rot)
+var brush = new SolidColorBrush(c1);                                // Color → Brush
+Color back = brush.Color;                                           // Brush → Color
+Brush b2 = (Brush)new BrushConverter().ConvertFromString("#FF8000")!;   // Text → Brush
+string hex = c1.ToString();                                         // Color → "#FFFF8000" (ARGB)
+Brush fixedBrush = Brushes.Red;   Color fixedColor = Colors.Red;    // vordefiniert
+var pen = new Pen(brush, 2);                                        // Pen (Linie) braucht Brush
+brush.Freeze();                                                     // fürs Zeichnen schneller
+----
+
+* Ein `string` wie `"Red"`/`"#FF8000"` kann man *ohne* Converter an `Background`/`Fill` binden. Converter nur nötig,
+  wenn das ViewModel `Color`, eine Zahl (Index) oder ein anderes Format liefert.
 
 === Layout-Panels
 
@@ -1729,6 +1948,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
 === Teil A: UserControl mit bindbarer Property + Skalierung (kopieren)
 
+.Klasse + bindbare Property
 [source,csharp]
 ----
 // Wpf/Controls/PreviewControl.xaml(.cs): Hinzufügen → Benutzersteuerelement (UserControl)
@@ -1752,7 +1972,11 @@ public partial class PreviewControl : UserControl
 
     private static void OnStepsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
         => ((PreviewControl)d).InvalidateVisual();     // neue Daten → neu zeichnen
+----
 
+.Stifte (Farbindex → Pen)
+[source,csharp]
+----
     // Farbindex → Stift (Freeze = unveränderlich, schneller)
     private static readonly Pen[] Pens = CreatePens(
         Colors.Red, Colors.Orange, Colors.Yellow, Colors.Green, Colors.Blue, Colors.DarkBlue,
@@ -1768,7 +1992,11 @@ public partial class PreviewControl : UserControl
 
     private const double DrawMargin = 10;              // Abstand zum Rand
     private double _scale, _offsetX, _offsetY;
+----
 
+.OnRender: Bounding Box, Skalierung, Zeichnen
+[source,csharp]
+----
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
@@ -1822,6 +2050,7 @@ public partial class PreviewControl : UserControl
 
 === Teil B: Daten der Angabe → Linien (anpassen)
 
+.Daten → Linien
 [source,csharp]
 ----
 // Richtung als Index → Schritt in x/y. Reihenfolge wie in der Angabe!
@@ -1852,6 +2081,7 @@ private static List<Segment> BuildSegments(IList<Step>? steps)
 }
 ----
 
+.Andere Eingaben
 [source,csharp]
 ----
 // Variante Winkel + Länge (Grad → Bogenmaß; minus, weil y nach unten wächst)
@@ -1900,6 +2130,7 @@ for (int i = 1; i < Values.Count; i++)
 
 === Controller: DTO, GET (Liste, Filter, Sortierung), GET by Id
 
+.Klasse, DTOs, Konvertierung
 [source,csharp]
 ----
 // WebApi/Controllers/TagsController.cs → URL /Tags (Swagger: /swagger)
@@ -1924,7 +2155,11 @@ public class TagsController : ControllerBase
     private static TagDto? ToDto(Tag? e) => e == null ? null
         : new TagDto(e.Id, e.Description, e.Active,
                      e.Items?.Select(i => new ItemDto(i.Id, i.Name, i.Description)).ToList());
+----
 
+.GET Liste (Filter, Sortierung, Include)
+[source,csharp]
+----
     // GET /Tags?activeOnly=false&sort=Description
     [HttpGet]
     public async Task<ActionResult<IEnumerable<TagDto>>> GetAsync(bool? activeOnly, string? sort)
@@ -1946,7 +2181,11 @@ public class TagsController : ControllerBase
         IList<TagDto> dtos = entities.Select(e => ToDto(e)!).ToList();   // IList, nicht List!
         return await this.NotFoundOrOk(dtos);
     }
+----
 
+.GET by Id
+[source,csharp]
+----
     // GET /Tags/5
     [HttpGet("{id:int}")]
     public async Task<ActionResult<TagDto>> GetAsync(int id)
@@ -1958,6 +2197,7 @@ public class TagsController : ControllerBase
 
 === Controller: POST (anlegen mit m:n), POST Unterressource, GET Auswertung
 
+.POST: anlegen mit m:n
 [source,csharp]
 ----
     // POST /Tags   Body: { "description": "C4", "active": true, "items": [ { "id": 1 }, ... ] }
@@ -1989,7 +2229,11 @@ public class TagsController : ControllerBase
 
         return Created(this.GetCurrentUri() + "/" + entity.Id, ToDto(entity));    // 201
     }
+----
 
+.POST: Unterressource
+[source,csharp]
+----
     // POST /Tags/5/ratings   Body: [ { "itemId": 1, "value": 4 }, ... ]
     [HttpPost("{id:int}/ratings")]
     public async Task<ActionResult> AddRatingsAsync(int id, [FromBody] IList<RatingDto> ratings)
@@ -2017,7 +2261,11 @@ public class TagsController : ControllerBase
         await trans.CommitTransactionAsync();
         return Ok();                                                               // 200
     }
+----
 
+.GET: Auswertung
+[source,csharp]
+----
     // GET /Tags/5/rating-result  → Auswertung per Repository-Methode (siehe Datenbank)
     [HttpGet("{id:int}/rating-result")]
     public async Task<ActionResult<IEnumerable<RatingCountDto>>> GetRatingResultAsync(int id)
@@ -2033,6 +2281,7 @@ public class TagsController : ControllerBase
 [[tests]]
 == Unit-Tests
 
+.Testklasse + CanExecute-Test
 [source,csharp]
 ----
 using FluentAssertions;
@@ -2051,14 +2300,22 @@ public class MainViewModelTests
 
         canExecute.Should().BeFalse();                       // Assert
     }
+----
 
+.Theory: mehrere Eingaben
+[source,csharp]
+----
     [Theory]
     [InlineData("12:34", true)]
     [InlineData("abc",   false)]
     [InlineData(null,    false)]
     public void IsValidTime_Works(string? input, bool expected)
         => input.IsValidTime().Should().Be(expected);
+----
 
+.Test mit Datei
+[source,csharp]
+----
     [Fact]
     public void Load_Twice_DoesNotDuplicate()
     {
