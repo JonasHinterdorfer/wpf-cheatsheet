@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '**.adoc'
+      - 'themes/**'
       - '.github/workflows/build-pdf.yml'
   workflow_dispatch:
 
