@@ -175,9 +175,53 @@ double km = double.Parse(header[1], CultureInfo.InvariantCulture);
 var output = new List<string> { $"{title};{km.ToString(CultureInfo.InvariantCulture)}" };
 output.AddRange(entries.Select(e => $"{e.Number};{e.Text};{e.Value}"));
 File.WriteAllLines(fileName, output);                   // überschreibt; AppendAllLines hängt an
-
-var files = Directory.GetFiles(root, "*.txt", SearchOption.AllDirectories);   // rekursiv
 ----
+
+=== Dateien, Ordner und Pfade
+
+[source,csharp]
+----
+// Pfade (immer Path.Combine, nie + "\\")
+string exeDir = AppContext.BaseDirectory;                      // bin\Debug\net8.0\ (endet mit \)
+string path   = Path.Combine(exeDir, "ImportData", "data.txt");
+string full   = Path.IsPathRooted(p) ? p : Path.Combine(exeDir, p);     // relativ → absolut
+Path.GetFileName(@"C:\Data\GroupA\Sample_20250225.txt");     // "Sample_20250225.txt"
+Path.GetFileNameWithoutExtension(file);                       // "Sample_20250225"
+Path.GetExtension(file);                                      // ".txt"
+Path.GetDirectoryName(file);                                  // "C:\Data\GroupA"
+Path.GetFileName(dir);                                        // Ordnername "GroupA"
+Path.GetRelativePath(root, file);                             // "GroupA\Sample_20250225.txt"
+
+// Prüfen, auflisten
+bool ok = File.Exists(path) && Directory.Exists(root);
+string[] dirs  = Directory.GetDirectories(root);              // Unterordner, 1 Ebene
+string[] files = Directory.GetFiles(dir, "*.txt");            // nur dieser Ordner
+string[] all   = Directory.GetFiles(root, "*.txt", SearchOption.AllDirectories);   // rekursiv
+
+// Lesen, schreiben, verwalten
+string   text  = await File.ReadAllTextAsync(path);            // ReadAllText / ReadAllLines(Async)
+string[] lines = File.ReadAllLines(path);
+File.WriteAllText(path, text);                                // WriteAllLines, AppendAllText
+Directory.CreateDirectory(Path.Combine(exeDir, "Export"));    // kein Fehler, wenn vorhanden
+File.Copy(src, dest, overwrite: true);   File.Move(src, dest);   File.Delete(path);
+
+// Datum am Ende des Dateinamens: "Sample_20250225" → 2025-02-25, sonst heute
+var parts = name.Split('_');
+DateOnly date = parts.Length > 1
+                && DateOnly.TryParseExact(parts[^1], "yyyyMMdd", CultureInfo.InvariantCulture,
+                                          DateTimeStyles.None, out var d)
+    ? d : DateOnly.FromDateTime(DateTime.Today);
+----
+
+[source,xml]
+----
+<!-- csproj: Datei neben die .exe kopieren (oder Eigenschaften → "Copy if newer") -->
+<ItemGroup>
+  <None Update="ImportData\**\*" CopyToOutputDirectory="PreserveNewest"/>
+</ItemGroup>
+----
+
+* `Directory.GetCurrentDirectory()` hängt vom Start ab → `AppContext.BaseDirectory` verwenden. `MM` = Monat, `mm` = Minuten.
 
 [[db]]
 == Datenbank und Import
