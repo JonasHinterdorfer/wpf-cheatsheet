@@ -34,6 +34,11 @@ Snippets in Arbeitsreihenfolge, Beispielprojekt: Turtle. Platzhalter per Suchen/
 *Punkteverluste:* Code im Code-Behind · ganze Tabelle laden statt in der DB filtern · Button falsch aktiv ·
 Liste doppelt · Felder nach Hinzufügen nicht geleert · falscher Bereich wächst beim Vergrößern.
 
+*Visual Studio:* `Strg+.` Schnellaktionen (using, Interface implementieren) · `Strg+Umschalt+B` bauen ·
+`F5` / `Strg+F5` starten mit/ohne Debugger · `F12` Definition · `Strg+R, Strg+R` umbenennen ·
+`Strg+K, Strg+D` formatieren · `prop`/`ctor` + 2× Tab · *Ansicht → Aufgabenliste* zeigt alle `TODO` ·
+*Test → Test-Explorer* · Startprojekt: Rechtsklick → „Als Startprojekt festlegen“.
+
 === Platzhalter (Sheet → Turtle)
 
 [cols="2,2,3",options="header"]
@@ -223,6 +228,20 @@ DateOnly date = parts.Length > 1
 
 * `Directory.GetCurrentDirectory()` hängt vom Start ab → `AppContext.BaseDirectory` verwenden. `MM` = Monat, `mm` = Minuten.
 
+.Datei-/Ordner-Auswahl (Dialoge)
+[source,csharp]
+----
+// Datei- / Ordner-Auswahl (using Microsoft.Win32;) - im Navigator, nicht im ViewModel
+var open = new OpenFileDialog { Filter = "Text|*.txt|Alle|*.*", InitialDirectory = exeDir };
+if (open.ShowDialog() == true) FileName = open.FileName;
+
+var folder = new OpenFolderDialog();                           // ab .NET 8
+if (folder.ShowDialog() == true) Folder = folder.FolderName;
+
+var save = new SaveFileDialog { Filter = "Text|*.txt", FileName = "export.txt" };
+if (save.ShowDialog() == true) File.WriteAllLines(save.FileName, lines);
+----
+
 [[db]]
 == Datenbank und Import
 
@@ -376,7 +395,7 @@ public class ApplicationDbContext : DbContext
 }
 ----
 
-* Helfer: `AsText(n)`, `AsRequiredText(n)`, `AsDecimal(10, 2)`, `AsDate()`. Weitere: `.HasForeignKey(d => d.ItemId)`,
+* Helfer: `AsText(n)`, `AsRequiredText(n)`, `AsDecimal(10, 2)`, `AsDate()`. Weitere: `+.HasForeignKey(d => d.ItemId)+`,
   `.OnDelete(DeleteBehavior.Restrict)` (bei „multiple cascade paths“).
 * Connection-String in `appsettings.json` (Import *und* Wpf). Ohne LocalDB: `Server=localhost;...;TrustServerCertificate=True`.
 
@@ -484,6 +503,8 @@ public async Task<IList<RatingCountDto>> GetRatingCountsAsync(int tagId)
 ----
 
 * Alles vor `ToListAsync()` läuft als SQL. Weitere: `.Min/.Max/.Average/.Sum(...)` (im DTO als `double?`).
+* Mit Bedingung, ebenfalls in SQL: `+i.Details!.Count(d => d.Color != null)+`, `+i.Details!.Sum(d => d.Repeat)+`,
+  `+i.Details!.Where(d => d.Kind > 0).Sum(d => d.Repeat)+`. Nie erst `ToListAsync()` und dann zählen.
 * Neues Repository: Interface + Klasse + Property in `IUnitOfWork`/`UnitOfWork` + `AddTransient` in Import *und* Wpf.
 
 === UnitOfWork / GenericRepository der Vorlage
@@ -491,7 +512,7 @@ public async Task<IList<RatingCountDto>> GetRatingCountsAsync(int tagId)
 [cols="3,2"]
 |===
 | `await _uow.ItemRepository.GetNoTrackingAsync(filter, orderBy, includes)` | Liste nur lesen
-| `await _uow.CategoryRepository.GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name))` | sortierte Liste (ComboBox)
+| `+await _uow.CategoryRepository.GetNoTrackingAsync(orderBy: q => q.OrderBy(c => c.Name))+` | sortierte Liste (ComboBox)
 | `await _uow.ItemRepository.GetAsync(...)` / `GetByIdAsync(id)` | getrackt laden (zum Ändern)
 | `await _uow.ItemRepository.GetNoTrackingByIdAsync(id, nameof(Item.Details))` | ein Objekt lesen, Include als String
 | `CountAsync(filter)` / `ExistsAsync(id)` | Anzahl / existiert?
@@ -613,7 +634,7 @@ public class ImportService : IImportService
             Details      = steps
                 .Select((s, idx) => new Detail            // Domain-Record → Entity, idx = SeqNo
                 {
-                    SeqNo  = idx,
+                    SeqNo  = idx,                         // Angabe „ab 1“ → idx + 1
                     Kind   = s.Kind,
                     Repeat = s.Repeat,
                     Color  = s.Color,
@@ -733,7 +754,7 @@ DateOnly GetDateFromName(string name)
 
 === Haupt-ViewModel: Filter, Liste, Edit/Update, Dialoge
 
-* `RelayCommand(Execute, CanExecute)` ohne Parameter, `RelayCommandParam(p => ..., p => ...)` mit `CommandParameter`.
+* `RelayCommand(Execute, CanExecute)` ohne Parameter, `+RelayCommandParam(p => ..., p => ...)+` mit `CommandParameter`.
 * Listen als `IList<T>`-Property *ganz ersetzen* (`Items = await ...`). `ObservableCollection` nur bei `Add`/`Remove` einzelner Einträge.
 * Usings: `System.Windows.Input` (ICommand, CommandManager), `System.Runtime.CompilerServices` (CallerMemberName).
 
@@ -938,6 +959,27 @@ public class MainWindowViewModel : ValidatableBaseViewModel
 
     #endregion
 }
+----
+
+.Löschen mit Sicherheitsabfrage (falls verlangt)
+[source,csharp]
+----
+    // Konstruktor: DeleteCommand = new RelayCommand(async () => await DeleteAsync(),
+    //                                               () => SelectedItem != null && !IsEditing);
+    private async Task DeleteAsync()
+    {
+        if (!Controller!.AskYesNoMessageBox("Delete", $"Delete '{SelectedItem!.Name}'?"))
+        {
+            return;
+        }
+        var item = await _uow.ItemRepository.GetByIdAsync(SelectedItem.Id);   // getrackt
+        if (item != null)
+        {
+            _uow.ItemRepository.Remove(item);           // Details löscht die DB (Cascade)
+            await _uow.SaveChangesAsync();
+        }
+        await LoadItemsAsync();
+    }
 ----
 
 === Dialog-ViewModel: Eingabe mit Validierung
@@ -1572,7 +1614,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 </Grid>
 ----
 
-* TextBox statt ComboBox: `IsReadOnly="{Binding IsNotEditing}"` mit `public bool IsNotEditing => !IsEditing;`.
+* TextBox statt ComboBox: `IsReadOnly="{Binding IsNotEditing}"` mit `+public bool IsNotEditing => !IsEditing;+`.
 
 === Button-Leiste (UniformGrid: gleich breite Buttons)
 
@@ -1750,7 +1792,7 @@ public class WindowNavigator : BaseWindowNavigator, IWindowNavigator
 
 * `{Binding}` ohne Pfad = das ganze Element. Mit Auswahl: `ListBox` statt `ItemsControl` (+ `SelectedItem`),
   gleiches `ItemTemplate`. `ItemTemplate` und `DisplayMemberPath` nicht gleichzeitig.
-* Element per Command bekommen: `new RelayCommandParam(p => Show((ItemOverviewDto)p!))`.
+* Element per Command bekommen: `+new RelayCommandParam(p => Show((ItemOverviewDto)p!))+`.
 
 === DataTemplate ohne ItemsControl
 
@@ -2148,7 +2190,8 @@ public class TagsController : ControllerBase
     }
 
     // DTO = was über HTTP geht (nie die Entity direkt zurückgeben)
-    public record ItemDto(int Id, string Name, string? Description);
+    // string? statt string: sonst ist das Feld im Body Pflicht → { "id": 1 } gibt 400
+    public record ItemDto(int Id, string? Name, string? Description);
     public record TagDto(int Id, string Description, bool Active, IList<ItemDto>? Items);
     public record RatingDto(int ItemId, int Value);
 
@@ -2277,6 +2320,9 @@ public class TagsController : ControllerBase
   `this.NotFoundOrOk(x)` (Vorlage `Base.Web`): `null` → 404, sonst 200.
 * Usings: `Base.Web.Controller`, `Core.Contracts`, `Core.Entities`, `Core.DataTransferObjects`, `System.Linq.Expressions`.
 * `WebApi/Program.cs`: neue Repositories wie in Import/Wpf registrieren. Starten: `WebApi` als Startprojekt → Swagger.
+* `[ApiController]` prüft den Body selbst: Nicht-nullable `string` im DTO = Pflichtfeld, fehlt es → 400, bevor die Methode läuft.
+* *CS0119 „… is a method“*: Entity heißt wie eine Methode von `ControllerBase` (`Challenge`, `File`, `Content`) →
+  `using ChallengeEntity = Core.Entities.Challenge;`
 
 [[tests]]
 == Unit-Tests
@@ -2332,8 +2378,41 @@ public class MainViewModelTests
 }
 ----
 
-* FluentAssertions: `.Be(x)`, `.BeTrue()`, `.BeNull()`, `.HaveCount(n)`, `.BeEmpty()`, `.Contain(x => ...)`,
+* FluentAssertions: `.Be(x)`, `.BeTrue()`, `.BeNull()`, `.HaveCount(n)`, `.BeEmpty()`, `+.Contain(x => ...)+`,
   `act.Should().Throw<FormatException>()`. Async-Test: `public async Task ...` und die Task-Methode awaiten.
+
+.ViewModel mit Service/UnitOfWork ohne DB testen: eigene Fake-Klasse (kein NuGet nötig)
+[source,csharp]
+----
+public class ImportViewModelTests
+{
+    private class FakeImportService : IImportService        // nur für den Test
+    {
+        public int Calls { get; private set; }
+        public Task ImportItemAsync(string name, string? description, string? category,
+                                    DateOnly creationDate, string fileName)
+        {
+            Calls++;
+            return Task.CompletedTask;
+        }
+    }
+
+    [Fact]
+    public void ImportCommand_FileMissing_IsDisabled()
+    {
+        var vm = new ImportViewModel(new FakeImportService())
+        {
+            FileName = @"C:\does\not\exist.txt",
+        };
+
+        vm.ImportCommand.CanExecute(null).Should().BeFalse();
+    }
+}
+----
+
+* Klasse mit `: IImportService` schreiben → *Strg+.* → „Schnittstelle implementieren“.
+* Braucht das ViewModel `IUnitOfWork`, der Test aber keine DB-Methode: `null!` übergeben.
+* Testdatei: `Path.GetTempFileName()`. Testprojekt mit `UseWPF`: `using System.IO;` ergänzen (sonst CS0103 bei `File`).
 
 [[fehler]]
 == Häufige Fehler
@@ -2345,9 +2424,14 @@ public class MainViewModelTests
 * *Liste doppelt* → vor dem Befüllen `Clear()` bzw. Liste neu zuweisen.
 * *„Content is set more than once“* → zweites Element direkt im `Window`, alles ins `<Grid>`.
 * *Exception bei `GetRequiredService`* → Fenster/Repository/Service nicht registriert.
-* *`RelayCommand` mit `p => ...` kompiliert nicht* → `RelayCommandParam`.
+* *`RelayCommand` mit `+p => ...+` kompiliert nicht* → `RelayCommandParam`.
 * *CS9035 required member* → im `new Xxx { ... }` alle `required`-Properties setzen.
 * *Zwei Klassen gleichen Namens* (Entity + Record) → Alias `using Step = Core.Domain.Step;`.
 * *„appsettings.json not found“* → aus dem Projektordner starten (F5).
 * *`XamlParseException`* → Inner Exception lesen (`Command="Binding X"` ohne `{}`, ungültiger Wert).
 * *Designer: „existiert nicht im Namespace“* → einmal erfolgreich bauen.
+* *Aus `Name_2025` wird `Name2025`* → `Label` macht `_` zum Access-Key. Werte mit `TextBlock Text="{Binding ...}"` anzeigen.
+* *Datum als `2/25/2025`* → WPF formatiert immer en-US. Einmal in `Application_Startup`:
+  `FrameworkElement.LanguageProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(XmlLanguage.GetLanguage(CultureInfo.CurrentCulture.IetfLanguageTag)));`
+* *„A second operation was started on this context“* → zwei DB-Aufrufe ohne `await` dazwischen bzw. derselbe DbContext in zwei Fenstern (Dialog ohne eigenen Scope).
+* *„Cannot open database“ / „Invalid object name“* → DB fehlt: zuerst `ImportConsoleApp` laufen lassen.
