@@ -1820,7 +1820,7 @@ nicht nur in Listen.
 | `{Binding IsVisible, Converter={StaticResource BoolToVis}}` | `<BooleanToVisibilityConverter x:Key="BoolToVis"/>` in den Resources
 |===
 
-* `<` in Attributen als `&lt;` schreiben. Binding-Fehler stehen im *Output-Fenster*.
+* `<` in Attributen als `+&lt;+` schreiben (`+"&lt;All&gt;"+`). Binding-Fehler stehen im *Output-Fenster*.
 
 === Styles und Trigger
 
