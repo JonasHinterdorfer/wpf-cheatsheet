@@ -683,16 +683,18 @@ DateOnly GetDateFromName(string name)
 
 * `RelayCommand(Execute, CanExecute)` ohne Parameter, `RelayCommandParam(p => ..., p => ...)` mit `CommandParameter`.
 * Listen als `IList<T>`-Property *ganz ersetzen* (`Items = await ...`). `ObservableCollection` nur bei `Add`/`Remove` einzelner Einträge.
+* Usings: `System.Windows.Input` (ICommand, CommandManager), `System.Runtime.CompilerServices` (CallerMemberName).
 
+.ComboBox-Eintrag (Wpf.ViewModels/Models/CategoryItem.cs)
 [source,csharp]
 ----
-// Wpf.ViewModels/Models/CategoryItem.cs - Eintrag einer ComboBox, Id null = "<All>"/"<none>"
-public record CategoryItem(int? Id, string Name)
+public record CategoryItem(int? Id, string Name)       // Id null = "<All>" bzw. "<none>"
 {
     public override string ToString() => Name;
 }
 ----
 
+.Klasse + region crt: Felder, Konstruktor mit allen Commands
 [source,csharp]
 ----
 public class MainWindowViewModel : ValidatableBaseViewModel
@@ -716,7 +718,11 @@ public class MainWindowViewModel : ValidatableBaseViewModel
     }
 
     #endregion
+----
 
+.region Properties: Filter-ComboBox
+[source,csharp]
+----
     #region Properties/Commands
 
     private static readonly CategoryItem AllItem  = new(null, "<All>");     // einmal erzeugen
@@ -735,7 +741,11 @@ public class MainWindowViewModel : ValidatableBaseViewModel
         get => _selectedFilterCategory;
         set => SetProperty(ref _selectedFilterCategory, value);
     }
+----
 
+.region Properties: Liste + Auswahl
+[source,csharp]
+----
     private IList<ItemOverviewDto> _items = [];
     public IList<ItemOverviewDto> Items
     {
@@ -757,7 +767,11 @@ public class MainWindowViewModel : ValidatableBaseViewModel
             }
         }
     }
+----
 
+.region Properties: Bearbeiten
+[source,csharp]
+----
     private IList<CategoryItem> _editCategories = [];
     public IList<CategoryItem> EditCategories
     {
@@ -778,7 +792,11 @@ public class MainWindowViewModel : ValidatableBaseViewModel
         get => _isEditing;
         set => SetProperty(ref _isEditing, value);
     }
+----
 
+.region Commands + Buttons sofort neu prüfen
+[source,csharp]
+----
     public ICommand FilterCommand  { get; }
     public ICommand DetailsCommand { get; }
     public ICommand EditCommand    { get; }
@@ -787,7 +805,7 @@ public class MainWindowViewModel : ValidatableBaseViewModel
 
     #endregion
 
-    // Buttons sofort neu prüfen, wenn sich der Zustand ohne Eingabe ändert (z. B. nach await)
+    // CanExecute neu prüfen, wenn sich der Zustand ohne Eingabe ändert (z. B. nach await)
     protected override void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {
         base.OnPropertyChanged(propertyName);
@@ -796,7 +814,11 @@ public class MainWindowViewModel : ValidatableBaseViewModel
             CommandManager.InvalidateRequerySuggested();
         }
     }
+----
 
+.region Operations: Laden (Start, Filter)
+[source,csharp]
+----
     #region Operations
 
     public override async Task InitializeDataAsync()         // läuft bei Loaded (Programmstart)
@@ -825,7 +847,11 @@ public class MainWindowViewModel : ValidatableBaseViewModel
         Items        = await _uow.ItemRepository.GetOverviewAsync(SelectedFilterCategory?.Id);
         SelectedItem = Items.FirstOrDefault(i => i.Id == selectedId);
     }
+----
 
+.region Operations: Dialoge + Update
+[source,csharp]
+----
     private void ShowDetails() => Controller!.ShowDetails(SelectedItem!.Id);
 
     private async Task UpdateCategoryAsync()
@@ -862,10 +888,9 @@ public class MainWindowViewModel : ValidatableBaseViewModel
 }
 ----
 
-* Usings: `System.Windows.Input` (ICommand, CommandManager), `System.Runtime.CompilerServices` (CallerMemberName).
-
 === Dialog-ViewModel: Eingabe mit Validierung
 
+.Klasse + region crt: Commands + Defaultwerte
 [source,csharp]
 ----
 public class ImportViewModel : ValidatableBaseViewModel, IValidatableObject
@@ -890,7 +915,11 @@ public class ImportViewModel : ValidatableBaseViewModel, IValidatableObject
     }
 
     #endregion
+----
 
+.region Properties mit Validierungs-Attributen
+[source,csharp]
+----
     #region Properties/Commands
 
     private string _name = string.Empty;
@@ -932,7 +961,11 @@ public class ImportViewModel : ValidatableBaseViewModel, IValidatableObject
         get => _isBusy;
         set => SetProperty(ref _isBusy, value);
     }
+----
 
+.region Commands, Buttons neu prüfen, eigene Validierung
+[source,csharp]
+----
     public ICommand ImportCommand { get; }
     public ICommand CloseCommand  { get; }
 
@@ -955,7 +988,11 @@ public class ImportViewModel : ValidatableBaseViewModel, IValidatableObject
             yield return new ValidationResult("File does not exist", [nameof(FileName)]);
         }
     }
+----
 
+.region Operations: Import ausführen, Dialog schließen
+[source,csharp]
+----
     #region Operations
 
     public override Task InitializeDataAsync() => Task.CompletedTask;
@@ -992,12 +1029,15 @@ public class ImportViewModel : ValidatableBaseViewModel, IValidatableObject
 
 === Dialog-ViewModel: Details eines Datensatzes laden
 
+.Klasse + region crt
 [source,csharp]
 ----
 using Step = Core.Domain.Step;                           // Alias bei Namensgleichheit mit Entity
 
 public class DetailViewModel : ValidatableBaseViewModel
 {
+    #region crt
+
     public           IWindowNavigator? Controller { get; set; }
     private readonly IUnitOfWork       _uow;
 
@@ -1006,6 +1046,14 @@ public class DetailViewModel : ValidatableBaseViewModel
         _uow         = uow;
         CloseCommand = new RelayCommand(() => Controller!.CloseWindow(true));   // immer aktiv
     }
+
+    #endregion
+----
+
+.region Properties/Commands
+[source,csharp]
+----
+    #region Properties/Commands
 
     public int ItemId { get; set; }                       // setzt der Navigator VOR ShowDialog
 
@@ -1032,6 +1080,14 @@ public class DetailViewModel : ValidatableBaseViewModel
 
     public ICommand CloseCommand { get; }
 
+    #endregion
+----
+
+.region Operations: einen Datensatz laden
+[source,csharp]
+----
+    #region Operations
+
     public override async Task InitializeDataAsync()
     {
         // nur DIESES eine Item mit seinen Details laden
@@ -1050,6 +1106,8 @@ public class DetailViewModel : ValidatableBaseViewModel
             .Select(d => new Step(d.Kind, d.Repeat, d.Color))
             .ToList();
     }
+
+    #endregion
 }
 ----
 
